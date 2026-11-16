@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { save as saveDialog } from '@tauri-apps/plugin-dialog';
+import { projectLabel, type Cv, type ExportAck, type Project, type ProjectSummary } from './cv';
 import {
-  emptyExperience,
-  projectLabel,
-  type Cv,
-  type Experience,
-  type ExportAck,
-  type Project,
-  type ProjectSummary,
-} from './cv';
+  CertificationsSection,
+  EducationSection,
+  ExperienceSection,
+  LanguagesSection,
+  LinksSection,
+  ProjectsSection,
+  SkillsSection,
+} from './Sections';
 import { sha256, showPdf } from './pdf';
 
 type Preview = { revision: number; pages: number; sha256: string };
@@ -259,16 +260,7 @@ export default function App() {
   const setField = (field: 'name' | 'email' | 'phone' | 'location' | 'summary', value: string) =>
     editCv((cv) => ({ ...cv, [field]: value }));
 
-  const setExperience = (index: number, patch: Partial<Experience>) =>
-    editCv((cv) => ({
-      ...cv,
-      experience: cv.experience.map((entry, i) => (i === index ? { ...entry, ...patch } : entry)),
-    }));
-
-  const addExperience = () => editCv((cv) => ({ ...cv, experience: [...cv.experience, emptyExperience()] }));
-
-  const removeExperience = (index: number) =>
-    editCv((cv) => ({ ...cv, experience: cv.experience.filter((_, i) => i !== index) }));
+  const setLinks = (links: Cv['links']) => editCv((cv) => ({ ...cv, links }));
 
   return (
     <div className="app">
@@ -321,6 +313,9 @@ export default function App() {
             <input value={doc.cv.location} onChange={(e) => setField('location', e.target.value)} />
           </label>
 
+          <h2 className="group">Links (optional)</h2>
+          <LinksSection items={doc.cv.links} onChange={setLinks} />
+
           <h2 className="group">Professional summary</h2>
           <label>
             Summary
@@ -328,59 +323,31 @@ export default function App() {
           </label>
 
           <h2 className="group">Work experience</h2>
-          {doc.cv.experience.map((entry, index) => (
-            <fieldset className="entry" key={index}>
-              <legend>Role {index + 1}</legend>
-              <label>
-                Job title
-                <input value={entry.title} onChange={(e) => setExperience(index, { title: e.target.value })} />
-              </label>
-              <label>
-                Employer
-                <input value={entry.company} onChange={(e) => setExperience(index, { company: e.target.value })} />
-              </label>
-              <label>
-                Location
-                <input value={entry.location} onChange={(e) => setExperience(index, { location: e.target.value })} />
-              </label>
-              <div className="row">
-                <label>
-                  Start (e.g. Jan 2020)
-                  <input value={entry.start} onChange={(e) => setExperience(index, { start: e.target.value })} />
-                </label>
-                <label>
-                  End
-                  <input
-                    value={entry.end ?? ''}
-                    disabled={entry.end === null}
-                    onChange={(e) => setExperience(index, { end: e.target.value })}
-                  />
-                </label>
-              </div>
-              <label className="check">
-                <input
-                  type="checkbox"
-                  checked={entry.end === null}
-                  onChange={(e) => setExperience(index, { end: e.target.checked ? null : '' })}
-                />
-                Ongoing (Present)
-              </label>
-              <label>
-                Achievement bullets (one per line)
-                <textarea
-                  rows={3}
-                  value={entry.bullets.join('\n')}
-                  onChange={(e) => setExperience(index, { bullets: e.target.value.split('\n') })}
-                />
-              </label>
-              <button type="button" onClick={() => removeExperience(index)}>
-                Remove role
-              </button>
-            </fieldset>
-          ))}
-          <button type="button" className="add" onClick={addExperience}>
-            Add work experience
-          </button>
+          <ExperienceSection
+            items={doc.cv.experience}
+            onChange={(experience) => editCv((cv) => ({ ...cv, experience }))}
+          />
+
+          <h2 className="group">Education</h2>
+          <EducationSection
+            items={doc.cv.education}
+            onChange={(education) => editCv((cv) => ({ ...cv, education }))}
+          />
+
+          <h2 className="group">Skills</h2>
+          <SkillsSection items={doc.cv.skills} onChange={(skills) => editCv((cv) => ({ ...cv, skills }))} />
+
+          <h2 className="group">Projects</h2>
+          <ProjectsSection items={doc.cv.projects} onChange={(projects) => editCv((cv) => ({ ...cv, projects }))} />
+
+          <h2 className="group">Certifications</h2>
+          <CertificationsSection
+            items={doc.cv.certifications}
+            onChange={(certifications) => editCv((cv) => ({ ...cv, certifications }))}
+          />
+
+          <h2 className="group">Languages</h2>
+          <LanguagesSection items={doc.cv.languages} onChange={(languages) => editCv((cv) => ({ ...cv, languages }))} />
 
           <div className="actions">
             <button type="button" onClick={() => void render(doc.cv)} disabled={status === 'rendering'}>
@@ -413,6 +380,14 @@ export default function App() {
             <dt>Export SHA-256</dt>
             <dd className="hash">{exported?.sha256 ?? '—'}</dd>
           </dl>
+
+          {exported && exported.warnings.length > 0 && (
+            <ul className="warning" role="status">
+              {exported.warnings.map((warning) => (
+                <li key={warning}>{warning}</li>
+              ))}
+            </ul>
+          )}
 
           {saveError && (
             <p className="error" role="alert">

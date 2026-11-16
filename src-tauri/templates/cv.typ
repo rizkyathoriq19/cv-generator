@@ -57,6 +57,38 @@
   text([•] + h(0.35em)) + wrappable(body),
 )
 
+// A date never gains a month it does not have: year-only prints the year alone.
+#let months = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+#let fmt_date(d) = {
+  if d == none or d.year == none {
+    ""
+  } else if d.month != none {
+    months.at(d.month - 1) + " " + str(d.year)
+  } else {
+    str(d.year)
+  }
+}
+
+#let date_empty(d) = d == none or d.year == none
+
+// No end supplied is not already "Present": show the start alone.
+#let date_range(e) = {
+  let start = fmt_date(e.start)
+  if start == "" {
+    ""
+  } else if e.end == none {
+    start + " – Present"
+  } else {
+    let end = fmt_date(e.end)
+    if end == "" { start } else { start + " – " + end }
+  }
+}
+
+#let dates_text(dates) = if dates == "" { } else {
+  text(size: 9.5pt, fill: luma(40), wrappable("  (" + dates + ")"))
+}
+
 #let contacts = {
   let parts = ()
   if filled(cv.email) { parts.push(wrappable(cv.email)) }
@@ -71,13 +103,29 @@
 }
 
 // A draft entry with no content at all never becomes a row.
-#let entry_blank(e) = (
+#let role_blank(e) = (
   not filled(e.title) and not filled(e.company) and not filled(e.location)
-    and not filled(e.start) and not filled(e.end)
+    and date_empty(e.start) and date_empty(e.end)
     and e.bullets.all(b => not filled(b))
 )
 
-#let roles = cv.experience.filter(e => not entry_blank(e))
+#let school_blank(e) = (
+  not filled(e.school) and not filled(e.degree) and not filled(e.location)
+    and date_empty(e.start) and date_empty(e.end)
+    and e.bullets.all(b => not filled(b))
+)
+
+#let skill_blank(s) = not filled(s.name) and s.bullets.all(b => not filled(b))
+#let project_blank(p) = not filled(p.name) and not filled(p.detail) and p.bullets.all(b => not filled(b))
+#let cert_blank(c) = not filled(c.name) and not filled(c.issuer) and date_empty(c.date)
+#let language_blank(l) = not filled(l.name) and not filled(l.level)
+
+#let roles = cv.experience.filter(e => not role_blank(e))
+#let schools = cv.education.filter(e => not school_blank(e))
+#let skill_groups = cv.skills.filter(s => not skill_blank(s))
+#let project_entries = cv.projects.filter(p => not project_blank(p))
+#let certs = cv.certifications.filter(c => not cert_blank(c))
+#let langs = cv.languages.filter(l => not language_blank(l))
 
 // Header
 #text(size: 19pt, weight: "bold", wrappable(cv.name))
@@ -99,26 +147,87 @@
         if filled(e.title) { head.push(strong(wrappable(e.title))) }
         if filled(e.company) { head.push(wrappable(e.company)) }
         if filled(e.location) { head.push(wrappable(e.location)) }
-
-        // No end supplied is not already "Present": show the start alone.
-        let dates = if not filled(e.start) {
-          ""
-        } else if e.end == none {
-          e.start + " – Present"
-        } else if filled(e.end) {
-          e.start + " – " + e.end
-        } else {
-          e.start
-        }
-
         head.join([, ])
-        if dates != "" {
-          text(size: 9.5pt, fill: luma(40), wrappable("  (" + dates + ")"))
-        }
+        dates_text(date_range(e))
       })
       for b in e.bullets {
         if filled(b) { bullet(b) }
       }
+    }
+  })
+}
+
+#if schools.len() > 0 {
+  section("Education", {
+    for e in schools {
+      block(above: 0.5em, below: 1pt, width: 100%, {
+        let head = ()
+        if filled(e.degree) { head.push(strong(wrappable(e.degree))) }
+        if filled(e.school) { head.push(wrappable(e.school)) }
+        if filled(e.location) { head.push(wrappable(e.location)) }
+        head.join([, ])
+        dates_text(date_range(e))
+      })
+      for b in e.bullets {
+        if filled(b) { bullet(b) }
+      }
+    }
+  })
+}
+
+#if skill_groups.len() > 0 {
+  section("Skills", {
+    for s in skill_groups {
+      if filled(s.name) {
+        block(above: 0.5em, below: 1pt, width: 100%, strong(wrappable(s.name)))
+      }
+      for b in s.bullets {
+        if filled(b) { bullet(b) }
+      }
+    }
+  })
+}
+
+#if project_entries.len() > 0 {
+  section("Projects", {
+    for p in project_entries {
+      block(above: 0.5em, below: 1pt, width: 100%, {
+        if filled(p.name) { strong(wrappable(p.name)) }
+        if filled(p.detail) {
+          if filled(p.name) { [ — ] }
+          wrappable(p.detail)
+        }
+      })
+      for b in p.bullets {
+        if filled(b) { bullet(b) }
+      }
+    }
+  })
+}
+
+#if certs.len() > 0 {
+  section("Certifications", {
+    for c in certs {
+      block(above: 1pt, below: 3pt, width: 100%, {
+        let head = ()
+        if filled(c.name) { head.push(strong(wrappable(c.name))) }
+        if filled(c.issuer) { head.push(wrappable(c.issuer)) }
+        head.join([, ])
+        dates_text(fmt_date(c.date))
+      })
+    }
+  })
+}
+
+#if langs.len() > 0 {
+  section("Languages", {
+    for l in langs {
+      let label = if filled(l.name) and filled(l.level) {
+        l.name + " — " + l.level
+      } else {
+        l.name + l.level
+      }
+      block(above: 1pt, below: 1pt, width: 100%, wrappable(label))
     }
   })
 }

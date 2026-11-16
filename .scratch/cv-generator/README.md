@@ -5,7 +5,7 @@
 - Product design: confirmed by the user, design only.
 - Specification: [local spec](spec.md).
 - Tracker for this request: local files only; no remote issues or global tracker configuration changes.
-- Tickets: 01 and 02 implemented and runtime-verified on Arch/Omarchy; 03-11 remain draft proposals pending approval of granularity, genuine blocking edges, and the test seam. Execution still requires explicit implementation authorization.
+- Tickets: 01 and 02 implemented and runtime-verified on Arch/Omarchy; 03 implemented at the code/test seam and reviewed, with its application-level acceptance run still pending; 04-11 remain draft proposals pending approval of granularity, genuine blocking edges, and the test seam. Execution still requires explicit implementation authorization.
 - Current project: ticket 01 rendering gate and ticket 02 local library/autosave/reopen implemented (Tauri + Rust Typst + bundled PDF.js, Rust-owned project storage) and runtime-verified on Arch/Omarchy; no installer or native Windows/Ubuntu runs yet. See [ticket 01 evidence](evidence/README.md) and [ticket 02 evidence](evidence/ticket02/README.md).
 
 ## Proposed testing seam

@@ -11,3 +11,6 @@ src-tauri/gen
 
 # Review snapshots are throwaway patches.
 .scratch/review/
+
+# Python bytecode from the evidence drivers.
+__pycache__/
