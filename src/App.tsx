@@ -6,6 +6,7 @@ import {
   projectLabel,
   type Cv,
   type ExportAck,
+  type Lang,
   type Project,
   type ProjectSummary,
   type Structure,
@@ -20,18 +21,56 @@ import {
   SkillsSection,
 } from './Sections';
 import { sha256, showPdf } from './pdf';
+import { LANGS, LangContext, STRINGS, saveLang, storedLang, type Strings } from './i18n';
 
 type Preview = { revision: number; pages: number; sha256: string };
 type RenderState = 'idle' | 'rendering' | 'ready' | 'failed';
 type SaveState = 'idle' | 'waiting' | 'saving' | 'saved' | 'failed';
 
-const SAVE_LABEL: Record<SaveState, string> = {
-  idle: 'Not edited yet',
-  waiting: 'Unsaved changes',
-  saving: 'Saving…',
-  saved: 'Saved',
-  failed: 'Save failed',
+const SAVE_KEY: Record<SaveState, keyof Strings> = {
+  idle: 'saveIdle',
+  waiting: 'saveWaiting',
+  saving: 'saveSaving',
+  saved: 'saveSaved',
+  failed: 'saveFailed',
 };
+
+const STATUS_KEY: Record<RenderState, keyof Strings> = {
+  idle: 'statusIdle',
+  rendering: 'statusRendering',
+  ready: 'statusReady',
+  failed: 'statusFailed',
+};
+
+const STRUCTURE_KEY: Record<Structure, keyof Strings> = {
+  'reverse-chronological': 'structureReverse',
+  functional: 'structureFunctional',
+  combination: 'structureCombination',
+};
+
+/** Language names stay native, so the choice is readable in either interface. */
+function LanguageChoice({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: Lang;
+  onChange: (next: Lang) => void;
+}) {
+  return (
+    <label className="lang">
+      {label}
+      <select value={value} onChange={(e) => onChange(e.target.value as Lang)}>
+        {LANGS.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
 
 export default function App() {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
@@ -43,6 +82,20 @@ export default function App() {
   const [status, setStatus] = useState<RenderState>('idle');
   const [error, setError] = useState('');
   const [exported, setExported] = useState<(ExportAck & { matches: boolean }) | null>(null);
+  const [lang, setLang] = useState<Lang>(storedLang);
+
+  const t = STRINGS[lang];
+  // The reader's language, readable from callbacks that must not re-run when it
+  // changes: an interface switch never re-renders or edits the CV.
+  const langRef = useRef(lang);
+  langRef.current = lang;
+  const dateLocale = lang === 'indonesian' ? 'id-ID' : 'en-US';
+
+  // Interface language is an application preference: it never touches CV data.
+  useEffect(() => {
+    saveLang(lang);
+    document.documentElement.lang = lang === 'indonesian' ? 'id' : 'en';
+  }, [lang]);
 
   const host = useRef<HTMLDivElement>(null);
   const revision = useRef(0);
@@ -92,6 +145,16 @@ export default function App() {
     }
   };
 
+  /** Duplication copies content, structure, and content language into a new CV. */
+  const duplicateProject = async (id: string) => {
+    try {
+      showProject(await invoke<Project>('duplicate_project', { id }));
+      await refreshLibrary();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
   const openProject = async (id: string) => {
     try {
       showProject(await invoke<Project>('open_project', { id }));
@@ -105,7 +168,7 @@ export default function App() {
     // a save started before the newest keystroke must not end the session silently.
     while (docRef.current && savedOk.current && edits.current > persisted.current) await persist();
     if (edits.current > persisted.current) {
-      setError('Changes could not be saved. Retry the save before leaving this CV.');
+      setError(t.cannotSave);
       return;
     }
     setDoc(null);
@@ -169,14 +232,20 @@ export default function App() {
 
   // --- preview -------------------------------------------------------------
 
-  const render = useCallback(async (input: Cv, structure: Structure) => {
+  const render = useCallback(async (input: Cv, structure: Structure, contentLanguage: Lang) => {
     const rev = ++revision.current;
     latest.current = rev;
     setStatus('rendering');
     setError('');
     try {
       // Rust renders once and caches these exact bytes for export.
-      const buffer = await invoke<ArrayBuffer>('render_pdf', { cv: input, structure, revision: rev });
+      const buffer = await invoke<ArrayBuffer>('render_pdf', {
+        cv: input,
+        structure,
+        contentLanguage,
+        interfaceLanguage: langRef.current,
+        revision: rev,
+      });
       if (latest.current !== rev) return; // late result from older content
       const bytes = new Uint8Array(buffer);
       const hash = await sha256(bytes);
@@ -193,15 +262,16 @@ export default function App() {
 
   const cv = doc?.cv;
   const structure = doc?.structure;
+  const contentLanguage = doc?.content_language;
   useEffect(() => {
-    if (!cv || !structure) {
+    if (!cv || !structure || !contentLanguage) {
       setStatus('idle');
       setPreview(null);
       return;
     }
-    const timer = setTimeout(() => void render(cv, structure), 400);
+    const timer = setTimeout(() => void render(cv, structure, contentLanguage), 400);
     return () => clearTimeout(timer);
-  }, [cv, structure, render]);
+  }, [cv, structure, contentLanguage, render]);
 
   const exportPdf = async () => {
     if (!preview || !doc) return;
@@ -218,6 +288,8 @@ export default function App() {
         path,
         cv: doc.cv,
         structure: doc.structure,
+        contentLanguage: doc.content_language,
+        interfaceLanguage: lang,
       });
       setExported({ ...ack, matches: ack.sha256 === preview.sha256 });
     } catch (e) {
@@ -227,186 +299,215 @@ export default function App() {
 
   // --- views ---------------------------------------------------------------
 
-  if (!doc) {
-    return (
-      <div className="app">
-        <header className="bar">
-          <div>
-            <h1>CV Generator</h1>
-            <p className="muted">Local library — projects stay on this device.</p>
-          </div>
-        </header>
-        <main className="library">
-          <div className="actions">
-            <button type="button" onClick={() => void createProject()}>
-              New CV
-            </button>
-            <button type="button" onClick={() => void refreshLibrary()}>
-              Refresh
-            </button>
-          </div>
-
-          {projects.length === 0 ? (
-            <p className="muted">No CVs yet. Create one to start.</p>
-          ) : (
-            <ul className="list">
-              {projects.map((project) => (
-                <li key={project.id}>
-                  <button type="button" className="row-button" onClick={() => void openProject(project.id)}>
-                    <span>{projectLabel(project)}</span>
-                    <span className="muted">{new Date(project.updated_at * 1000).toLocaleString()}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-
-          {error && (
-            <p className="error" role="alert">
-              {error}
-            </p>
-          )}
-        </main>
-      </div>
-    );
-  }
-
   const setField = (field: 'name' | 'email' | 'phone' | 'location' | 'summary', value: string) =>
     editCv((cv) => ({ ...cv, [field]: value }));
 
-  const setLinks = (links: Cv['links']) => editCv((cv) => ({ ...cv, links }));
-
-  return (
+  const view = !doc ? (
     <div className="app">
       <header className="bar">
         <div>
-          <h1>{projectLabel({ title: doc.title, name: doc.cv.name })}</h1>
-          <p className="muted">Autosaves one second after you stop editing.</p>
+          <h1>CV Generator</h1>
+          <p className="muted">{t.libraryTagline}</p>
+        </div>
+        <LanguageChoice label={t.interfaceShort} value={lang} onChange={setLang} />
+      </header>
+      <main className="library">
+        <div className="actions">
+          <button type="button" onClick={() => void createProject()}>
+            {t.newCv}
+          </button>
+          <button type="button" onClick={() => void refreshLibrary()}>
+            {t.refresh}
+          </button>
+        </div>
+
+        {projects.length === 0 ? (
+          <p className="muted">{t.noCvs}</p>
+        ) : (
+          <ul className="list">
+            {projects.map((project) => {
+              const label = projectLabel(project, t.untitledCv);
+              return (
+                <li key={project.id} className="project-row">
+                  <button type="button" className="row-button" onClick={() => void openProject(project.id)}>
+                    <span>{label}</span>
+                    <span className="muted">{new Date(project.updated_at * 1000).toLocaleString(dateLocale)}</span>
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`${t.duplicate} ${label}`}
+                    onClick={() => void duplicateProject(project.id)}
+                  >
+                    {t.duplicate}
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+
+        {error && (
+          <p className="error" role="alert">
+            {error}
+          </p>
+        )}
+      </main>
+    </div>
+  ) : (
+    <div className="app">
+      <header className="bar">
+        <div>
+          <h1>{projectLabel({ title: doc.title, name: doc.cv.name }, t.untitledCv)}</h1>
+          <p className="muted">{t.editorTagline}</p>
         </div>
         <div className="status">
           <span className={`save ${saveState}`} role="status">
-            {SAVE_LABEL[saveState]}
+            {t[SAVE_KEY[saveState]]}
           </span>
           {saveState === 'failed' && (
             <button type="button" onClick={() => void persist()}>
-              Retry save
+              {t.retrySave}
             </button>
           )}
+          <LanguageChoice label={t.interfaceShort} value={lang} onChange={setLang} />
           <button type="button" onClick={() => void backToLibrary()}>
-            Library
+            {t.library}
           </button>
         </div>
       </header>
 
       <main>
-        <section className="form" aria-label="CV editor">
+        <section className="form" aria-label={t.editorAria}>
           <label>
-            Project name (optional)
+            {t.projectNameOptional}
             <input
               value={doc.title}
-              placeholder={doc.cv.name.trim() || 'Untitled CV'}
+              placeholder={doc.cv.name.trim() || t.untitledCv}
               onChange={(e) => edit((project) => ({ ...project, title: e.target.value }))}
             />
           </label>
 
           <label>
-            Content structure
+            {t.contentStructure}
             <select
               value={doc.structure}
               onChange={(e) => edit((project) => ({ ...project, structure: e.target.value as Structure }))}
             >
-              {STRUCTURES.map((option) => (
+              {STRUCTURES.map((value) => (
+                <option key={value} value={value}>
+                  {t[STRUCTURE_KEY[value]]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <p className="muted">{t.structureHint}</p>
+
+          <label>
+            {t.contentLanguage}
+            <select
+              value={doc.content_language}
+              onChange={(e) => edit((project) => ({ ...project, content_language: e.target.value as Lang }))}
+            >
+              {LANGS.map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}
                 </option>
               ))}
             </select>
           </label>
-          <p className="muted">Switching structure changes presentation only; nothing you entered is removed.</p>
+          <p className="muted">{t.contentLanguageHint}</p>
 
-          <h2 className="group">Contact details</h2>
+          <h2 className="group">{t.contactDetails}</h2>
           <label>
-            Full name
+            {t.fullName}
             <input value={doc.cv.name} onChange={(e) => setField('name', e.target.value)} />
           </label>
           <label>
-            Email
+            {t.email}
             <input value={doc.cv.email} onChange={(e) => setField('email', e.target.value)} />
           </label>
           <label>
-            Phone (optional)
+            {t.phoneOptional}
             <input value={doc.cv.phone} onChange={(e) => setField('phone', e.target.value)} />
           </label>
           <label>
-            Location (optional)
+            {t.locationOptional}
             <input value={doc.cv.location} onChange={(e) => setField('location', e.target.value)} />
           </label>
 
-          <h2 className="group">Links (optional)</h2>
-          <LinksSection items={doc.cv.links} onChange={setLinks} />
+          <h2 className="group">{t.linksOptional}</h2>
+          <LinksSection items={doc.cv.links} onChange={(links) => editCv((cv) => ({ ...cv, links }))} />
 
-          <h2 className="group">Professional summary</h2>
+          <h2 className="group">{t.professionalSummary}</h2>
           <label>
-            Summary
+            {t.summary}
             <textarea rows={4} value={doc.cv.summary} onChange={(e) => setField('summary', e.target.value)} />
           </label>
 
-          <h2 className="group">Work experience</h2>
+          <h2 className="group">{t.workExperience}</h2>
           <ExperienceSection
             items={doc.cv.experience}
             onChange={(experience) => editCv((cv) => ({ ...cv, experience }))}
           />
 
-          <h2 className="group">Education</h2>
+          <h2 className="group">{t.education}</h2>
           <EducationSection
             items={doc.cv.education}
             onChange={(education) => editCv((cv) => ({ ...cv, education }))}
           />
 
-          <h2 className="group">Skills</h2>
+          <h2 className="group">{t.skills}</h2>
           <SkillsSection items={doc.cv.skills} onChange={(skills) => editCv((cv) => ({ ...cv, skills }))} />
 
-          <h2 className="group">Projects</h2>
+          <h2 className="group">{t.projects}</h2>
           <ProjectsSection items={doc.cv.projects} onChange={(projects) => editCv((cv) => ({ ...cv, projects }))} />
 
-          <h2 className="group">Certifications</h2>
+          <h2 className="group">{t.certifications}</h2>
           <CertificationsSection
             items={doc.cv.certifications}
             onChange={(certifications) => editCv((cv) => ({ ...cv, certifications }))}
           />
 
-          <h2 className="group">Languages</h2>
+          <h2 className="group">{t.languages}</h2>
           <LanguagesSection items={doc.cv.languages} onChange={(languages) => editCv((cv) => ({ ...cv, languages }))} />
 
           <div className="actions">
-            <button type="button" onClick={() => void render(doc.cv, doc.structure)} disabled={status === 'rendering'}>
-              Render preview
+            <button
+              type="button"
+              onClick={() => void render(doc.cv, doc.structure, doc.content_language)}
+              disabled={status === 'rendering'}
+            >
+              {t.renderPreview}
             </button>
             <button type="button" onClick={() => void exportPdf()} disabled={!preview || status === 'failed'}>
-              Export current PDF…
+              {t.exportPdf}
             </button>
           </div>
 
           <dl className="state">
-            <dt>Save</dt>
-            <dd>{SAVE_LABEL[saveState]}</dd>
-            <dt>Render</dt>
-            <dd>{status}</dd>
-            <dt>Preview</dt>
+            <dt>{t.save}</dt>
+            <dd>{t[SAVE_KEY[saveState]]}</dd>
+            <dt>{t.render}</dt>
+            <dd>{t[STATUS_KEY[status]]}</dd>
+            <dt>{t.preview}</dt>
             <dd>
               {preview
-                ? `${preview.pages} page(s), revision ${preview.revision}${status === 'failed' ? ' (outdated)' : ''}`
-                : 'none'}
+                ? `${preview.pages} ${t.pageCount}, ${t.revision} ${preview.revision}${
+                    status === 'failed' ? ` ${t.outdated}` : ''
+                  }`
+                : t.none}
             </dd>
-            <dt>Preview SHA-256</dt>
+            <dt>{t.previewHash}</dt>
             <dd className="hash">{preview?.sha256 ?? '—'}</dd>
-            <dt>Export</dt>
+            <dt>{t.export}</dt>
             <dd>
               {exported
-                ? `${exported.bytes} bytes → ${exported.path} — ${exported.matches ? 'identical bytes to preview' : 'DIFFERENT from preview'}`
-                : 'not exported'}
+                ? `${exported.bytes} bytes → ${exported.path} — ${
+                    exported.matches ? t.identicalBytes : t.differentBytes
+                  }`
+                : t.notExported}
             </dd>
-            <dt>Export SHA-256</dt>
+            <dt>{t.exportHash}</dt>
             <dd className="hash">{exported?.sha256 ?? '—'}</dd>
           </dl>
 
@@ -420,7 +521,7 @@ export default function App() {
 
           {saveError && (
             <p className="error" role="alert">
-              Save failed: {saveError}
+              {t.saveFailedPrefix} {saveError}
             </p>
           )}
 
@@ -431,11 +532,13 @@ export default function App() {
           )}
         </section>
 
-        <section className="preview" aria-label="PDF preview">
-          {status === 'rendering' && <p className="muted">Rendering…</p>}
+        <section className="preview" aria-label={t.previewAria}>
+          {status === 'rendering' && <p className="muted">{t.rendering}</p>}
           <div ref={host} className="pages" />
         </section>
       </main>
     </div>
   );
+
+  return <LangContext.Provider value={{ lang, t }}>{view}</LangContext.Provider>;
 }

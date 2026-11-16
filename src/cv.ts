@@ -48,13 +48,9 @@ export type Cv = {
 export type Structure = 'reverse-chronological' | 'functional' | 'combination';
 
 /** Presentation-only choices: switching never edits the CV content. */
-export const STRUCTURES: { value: Structure; label: string }[] = [
-  { value: 'reverse-chronological', label: 'Reverse chronological' },
-  { value: 'functional', label: 'Functional' },
-  { value: 'combination', label: 'Combination' },
-];
+export const STRUCTURES: Structure[] = ['reverse-chronological', 'functional', 'combination'];
 
-export type ContentLanguage = 'english' | 'indonesian';
+export type Lang = 'english' | 'indonesian';
 
 /** Mirrors the Rust Project struct; see docs/project-schema.md (version 1). */
 export type Project = {
@@ -62,7 +58,7 @@ export type Project = {
   id: string;
   title: string;
   structure: Structure;
-  content_language: ContentLanguage;
+  content_language: Lang;
   updated_at: number;
   cv: Cv;
 };
@@ -80,22 +76,6 @@ export type ExportAck = {
   sha256: string;
   warnings: string[];
 };
-
-/** Interface month labels; the PDF prints the same names shortened to three letters. */
-export const MONTHS = [
-  'January',
-  'February',
-  'March',
-  'April',
-  'May',
-  'June',
-  'July',
-  'August',
-  'September',
-  'October',
-  'November',
-  'December',
-];
 
 export const emptyDate = (): CvDate => ({ year: null, month: null });
 
@@ -146,5 +126,7 @@ export const moved = <T,>(items: T[], from: number, to: number): T[] => {
 };
 
 /** A CV with no project title or full name yet is still identifiable in the library. */
-export const projectLabel = (project: { title: string; name: string }): string =>
-  project.title.trim() || project.name.trim() || 'Untitled CV';
+export const projectLabel = (
+  project: { title: string; name: string },
+  fallback = 'Untitled CV',
+): string => project.title.trim() || project.name.trim() || fallback;

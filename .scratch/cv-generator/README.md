@@ -5,8 +5,8 @@
 - Product design: confirmed by the user, design only.
 - Specification: [local spec](spec.md).
 - Tracker for this request: local files only; no remote issues or global tracker configuration changes.
-- Tickets: 01 and 02 implemented and runtime-verified on Arch/Omarchy; 03 implemented at the code/test seam and reviewed, with its application-level acceptance run still pending; 04 implemented and application-verified on Arch/Omarchy; 05-11 remain draft proposals pending approval of granularity, genuine blocking edges, and the test seam. Execution still requires explicit implementation authorization.
-- Current project: ticket 01 rendering gate, ticket 02 local library/autosave/reopen, ticket 03 career sections/date validation, and ticket 04 structure projections implemented (Tauri + Rust Typst + bundled PDF.js, Rust-owned project storage); 04 is runtime-verified on Arch/Omarchy with short and multipage fixtures. See [ticket 01 evidence](evidence/README.md), [ticket 02 evidence](evidence/ticket02/README.md), [ticket 03 evidence](evidence/ticket03/README.md), and [ticket 04 evidence](evidence/ticket04/README.md). No installer or native Windows/Ubuntu runs yet.
+- Tickets: 01 and 02 implemented and runtime-verified on Arch/Omarchy; 03 implemented at the code/test seam and reviewed, with its application-level acceptance run still pending; 04 implemented and application-verified on Arch/Omarchy; 05 implemented and application-verified on Arch/Omarchy (warning localization proven at the Rust seam only); 06-11 remain draft proposals pending approval of granularity, genuine blocking edges, and the test seam. Execution still requires explicit implementation authorization.
+- Current project: ticket 01 rendering gate, ticket 02 local library/autosave/reopen, ticket 03 career sections/date validation, ticket 04 structure projections, and ticket 05 independent duplicates plus separate interface/content languages implemented (Tauri + Rust Typst + bundled PDF.js, Rust-owned project storage); 04 and 05 are runtime-verified on Arch/Omarchy with synthetic fixtures. See [ticket 01 evidence](evidence/README.md), [ticket 02 evidence](evidence/ticket02/README.md), [ticket 03 evidence](evidence/ticket03/README.md), [ticket 04 evidence](evidence/ticket04/README.md), and [ticket 05 evidence](evidence/ticket05/README.md). No installer or native Windows/Ubuntu runs yet.
 
 ## Proposed testing seam
 
@@ -89,7 +89,7 @@ The numbered stories in the spec are identified below as US-NN. Ticket coverage 
 
 ## Completion and review
 
-No later ticket is implemented. Tickets 01–04 have implementation evidence; 05–11 remain draft proposals. The local slice inventory covers the entire approved product; there are no existing routes/producer groups to migrate and no prefactor is required. There is no hidden downstream migration placeholder.
+No later ticket is implemented. Tickets 01–05 have implementation evidence; 06–11 remain draft proposals. The local slice inventory covers the entire approved product; there are no existing routes/producer groups to migrate and no prefactor is required. There is no hidden downstream migration placeholder.
 
 Before moving drafts to ready-for-agent, confirm:
 
