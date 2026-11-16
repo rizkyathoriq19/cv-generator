@@ -46,6 +46,14 @@ export type Cv = {
 };
 
 export type Structure = 'reverse-chronological' | 'functional' | 'combination';
+
+/** Presentation-only choices: switching never edits the CV content. */
+export const STRUCTURES: { value: Structure; label: string }[] = [
+  { value: 'reverse-chronological', label: 'Reverse chronological' },
+  { value: 'functional', label: 'Functional' },
+  { value: 'combination', label: 'Combination' },
+];
+
 export type ContentLanguage = 'english' | 'indonesian';
 
 /** Mirrors the Rust Project struct; see docs/project-schema.md (version 1). */

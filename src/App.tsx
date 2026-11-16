@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { save as saveDialog } from '@tauri-apps/plugin-dialog';
-import { projectLabel, type Cv, type ExportAck, type Project, type ProjectSummary } from './cv';
+import {
+  STRUCTURES,
+  projectLabel,
+  type Cv,
+  type ExportAck,
+  type Project,
+  type ProjectSummary,
+  type Structure,
+} from './cv';
 import {
   CertificationsSection,
   EducationSection,
@@ -161,14 +169,14 @@ export default function App() {
 
   // --- preview -------------------------------------------------------------
 
-  const render = useCallback(async (input: Cv) => {
+  const render = useCallback(async (input: Cv, structure: Structure) => {
     const rev = ++revision.current;
     latest.current = rev;
     setStatus('rendering');
     setError('');
     try {
       // Rust renders once and caches these exact bytes for export.
-      const buffer = await invoke<ArrayBuffer>('render_pdf', { cv: input, revision: rev });
+      const buffer = await invoke<ArrayBuffer>('render_pdf', { cv: input, structure, revision: rev });
       if (latest.current !== rev) return; // late result from older content
       const bytes = new Uint8Array(buffer);
       const hash = await sha256(bytes);
@@ -184,15 +192,16 @@ export default function App() {
   }, []);
 
   const cv = doc?.cv;
+  const structure = doc?.structure;
   useEffect(() => {
-    if (!cv) {
+    if (!cv || !structure) {
       setStatus('idle');
       setPreview(null);
       return;
     }
-    const timer = setTimeout(() => void render(cv), 400);
+    const timer = setTimeout(() => void render(cv, structure), 400);
     return () => clearTimeout(timer);
-  }, [cv, render]);
+  }, [cv, structure, render]);
 
   const exportPdf = async () => {
     if (!preview || !doc) return;
@@ -204,7 +213,12 @@ export default function App() {
         filters: [{ name: 'PDF', extensions: ['pdf'] }],
       });
       if (!path) return;
-      const ack = await invoke<ExportAck>('export_pdf', { revision: preview.revision, path, cv: doc.cv });
+      const ack = await invoke<ExportAck>('export_pdf', {
+        revision: preview.revision,
+        path,
+        cv: doc.cv,
+        structure: doc.structure,
+      });
       setExported({ ...ack, matches: ack.sha256 === preview.sha256 });
     } catch (e) {
       setError(String(e));
@@ -295,6 +309,21 @@ export default function App() {
             />
           </label>
 
+          <label>
+            Content structure
+            <select
+              value={doc.structure}
+              onChange={(e) => edit((project) => ({ ...project, structure: e.target.value as Structure }))}
+            >
+              {STRUCTURES.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <p className="muted">Switching structure changes presentation only; nothing you entered is removed.</p>
+
           <h2 className="group">Contact details</h2>
           <label>
             Full name
@@ -350,7 +379,7 @@ export default function App() {
           <LanguagesSection items={doc.cv.languages} onChange={(languages) => editCv((cv) => ({ ...cv, languages }))} />
 
           <div className="actions">
-            <button type="button" onClick={() => void render(doc.cv)} disabled={status === 'rendering'}>
+            <button type="button" onClick={() => void render(doc.cv, doc.structure)} disabled={status === 'rendering'}>
               Render preview
             </button>
             <button type="button" onClick={() => void exportPdf()} disabled={!preview || status === 'failed'}>

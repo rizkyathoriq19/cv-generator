@@ -64,7 +64,7 @@ the `projects` directory itself; users do not choose working-file locations.
 | `version` | Required file format version. Only `1` is read; a newer version is refused with an explicit error instead of being partially loaded. |
 | `id` | Generated lowercase hex project identity. It is also the file name, and it is validated (ASCII alphanumerics and `-` only) before it is ever used as a path. |
 | `title` | Optional project name shown in the library. Empty means the library shows the CV owner's name instead. |
-| `structure` | Selected content structure: `reverse-chronological`, `functional`, or `combination`. Version 1 stores it even though only reverse chronological is presented so far; switching structures must never require re-entering content. |
+| `structure` | Selected content structure: `reverse-chronological` (detailed employment first, skills supporting), `functional` (skill-group achievements first, compact employer/title/date employment), or `combination` (skill-group achievements first plus detailed employment). It is a presentation choice over the same `cv` data: switching structures never edits, deletes, or requires re-entering content, including content a structure does not display. |
 | `content_language` | Selected content language for authored content and standard headings: `english` or `indonesian`. Stored from version 1; the editor currently authors English only. |
 | `updated_at` | Unix seconds written by the application on every save; the library lists the most recently changed project first. |
 | `cv` | The authored CV data. Every section is optional: incomplete drafts are valid files. |
@@ -110,7 +110,9 @@ survive save/reopen.
   later), by a malformed supplied email address, by a supplied web link that does
   not start with `http://`/`https://` or contains whitespace, and by a stored date
   shape that breaks this contract (month outside 1–12, or a month without a year).
-  Missing optional content only produces warnings.
+  Missing optional content only produces warnings: missing contact details, undated
+  entries, and — for the `functional` and `combination` structures only — when no
+  skill group has an achievement bullet. The last warning never blocks export.
 - Files are unencrypted plain JSON. Corrupted-file recovery, one rolling previous
   revision, and project backup import/export are later slices and are not part of
   version 1 behaviour yet.
