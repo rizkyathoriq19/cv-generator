@@ -63,11 +63,19 @@ Screenshots in this directory: `01-start` … `22-dialog-open`.
 
 ## Limitations / not yet met
 
+- Export refuses a preview whose content has changed instead of regenerating it
+  (`preview does not match the current content; render again`). Automatic
+  regeneration on export and an outdated-preview marker belong to ticket 09.
+- Reverse chronological order is the order the user entered roles in; sorting by
+  the date rules (ongoing first, newest start first, manual ties) is ticket 03,
+  which owns date precision.
 - The export rejection for an empty CV was verified at the Rust seam only
-  (`export_requires_a_name_and_a_non_contact_section`). The identical UI path is
-  proven for save failures (red alert with the Rust message), but the
-  export-rejection message was not clicked through in the UI: the blind keyboard
-  driving used here drifted between controls on an empty form.
+  (`export_requires_a_name_and_a_non_contact_section`). An export *error* does
+  reach the UI alert (the destination-extension rejection was observed), but the
+  content and empty-CV rejection messages were not clicked through.
+- `save_project` is a blind upsert on the project id the frontend already holds.
+  Accepted for a single-user local app whose only client is this window; a
+  store-side ownership check belongs with backup import (ticket 06).
 - Contact links and the `structure` / `content_language` values are stored but have
   no editing control yet; switching them belongs to tickets 04 and 05.
 - No rolling previous revision, corrupted-file recovery, or close-time choices yet —

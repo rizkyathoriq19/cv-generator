@@ -39,7 +39,8 @@ export default function App() {
   const revision = useRef(0);
   const latest = useRef(0);
   const edits = useRef(0);
-  const saving = useRef(false);
+  const persisted = useRef(0); // edit count at the last successful write
+  const saving = useRef<Promise<void> | null>(null);
   const savedOk = useRef(true);
   const docRef = useRef<Project | null>(null);
   docRef.current = doc;
@@ -60,6 +61,7 @@ export default function App() {
 
   const showProject = (project: Project) => {
     edits.current = 0;
+    persisted.current = 0;
     docRef.current = project;
     savedOk.current = true;
     setDoc(project);
@@ -90,8 +92,10 @@ export default function App() {
   };
 
   const backToLibrary = async () => {
-    if (dirty) await persist();
-    if (!savedOk.current) {
+    // Wait out any in-flight write, then keep writing until no edit is unsaved:
+    // a save started before the newest keystroke must not end the session silently.
+    while (docRef.current && savedOk.current && edits.current > persisted.current) await persist();
+    if (edits.current > persisted.current) {
       setError('Changes could not be saved. Retry the save before leaving this CV.');
       return;
     }
@@ -107,29 +111,35 @@ export default function App() {
   // --- autosave: one second after the last edit -----------------------------
 
   const persist = useCallback(async () => {
-    if (saving.current) return;
-    const target = docRef.current;
-    if (!target) return;
-    const stamp = edits.current;
-    saving.current = true;
-    setSaveState('saving');
-    setSaveError('');
-    try {
-      const stored = await invoke<Project>('save_project', { project: target });
-      savedOk.current = true;
-      setDoc((current) => (current && current.id === stored.id ? { ...current, updated_at: stored.updated_at } : current));
-      if (edits.current === stamp) {
-        setDirty(false);
-        setSaveState('saved');
+    // Writes are serialized: a call made during a write waits for it, then writes
+    // whatever is current, so edits made mid-write are never reported as saved.
+    const run = (async () => {
+      if (saving.current) await saving.current;
+      const target = docRef.current;
+      if (!target) return;
+      const stamp = edits.current;
+      setSaveState('saving');
+      setSaveError('');
+      try {
+        const stored = await invoke<Project>('save_project', { project: target });
+        savedOk.current = true;
+        persisted.current = stamp;
+        setDoc((current) => (current && current.id === stored.id ? { ...current, updated_at: stored.updated_at } : current));
+        if (edits.current === stamp) {
+          setDirty(false);
+          setSaveState('saved');
+        }
+      } catch (e) {
+        savedOk.current = false;
+        setSaveError(String(e));
+        if (edits.current === stamp) setSaveState('failed');
       }
-    } catch (e) {
-      savedOk.current = false;
-      setSaveError(String(e));
-      if (edits.current === stamp) setSaveState('failed');
+    })();
+    saving.current = run;
+    try {
+      await run;
     } finally {
-      saving.current = false;
-      // Edits that arrived during the write are still unsaved: never report them as saved.
-      if (edits.current !== stamp) void persist();
+      if (saving.current === run) saving.current = null;
     }
   }, []);
 
@@ -145,6 +155,8 @@ export default function App() {
     edits.current += 1;
     setDirty(true);
   };
+
+  const editCv = (change: (cv: Cv) => Cv) => edit((project) => ({ ...project, cv: change(project.cv) }));
 
   // --- preview -------------------------------------------------------------
 
@@ -245,25 +257,18 @@ export default function App() {
   }
 
   const setField = (field: 'name' | 'email' | 'phone' | 'location' | 'summary', value: string) =>
-    edit((project) => ({ ...project, cv: { ...project.cv, [field]: value } }));
+    editCv((cv) => ({ ...cv, [field]: value }));
 
   const setExperience = (index: number, patch: Partial<Experience>) =>
-    edit((project) => ({
-      ...project,
-      cv: {
-        ...project.cv,
-        experience: project.cv.experience.map((entry, i) => (i === index ? { ...entry, ...patch } : entry)),
-      },
+    editCv((cv) => ({
+      ...cv,
+      experience: cv.experience.map((entry, i) => (i === index ? { ...entry, ...patch } : entry)),
     }));
 
-  const addExperience = () =>
-    edit((project) => ({ ...project, cv: { ...project.cv, experience: [...project.cv.experience, emptyExperience()] } }));
+  const addExperience = () => editCv((cv) => ({ ...cv, experience: [...cv.experience, emptyExperience()] }));
 
   const removeExperience = (index: number) =>
-    edit((project) => ({
-      ...project,
-      cv: { ...project.cv, experience: project.cv.experience.filter((_, i) => i !== index) },
-    }));
+    editCv((cv) => ({ ...cv, experience: cv.experience.filter((_, i) => i !== index) }));
 
   return (
     <div className="app">

@@ -185,6 +185,7 @@ def main():
     elif cmd == "tab":
         for _ in range(int(sys.argv[2])):
             tap("Tab")
+            time.sleep(float(sys.argv[3]) if len(sys.argv) > 3 else 0)
     elif cmd == "stab":
         for _ in range(int(sys.argv[2])):
             tap("Tab", shift=True)
@@ -199,6 +200,11 @@ def main():
         flush()
     elif cmd == "type":
         type_text(sys.argv[2])
+    elif cmd == "typewait":
+        delay = float(sys.argv[3]) if len(sys.argv) > 3 else 0.12
+        for ch in sys.argv[2]:
+            type_text(ch)
+            time.sleep(delay)
     elif cmd == "check":
         check()
     else:

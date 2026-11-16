@@ -18,7 +18,7 @@ use typst_layout::PagedDocument;
 // CV data (plain data only; never re-parsed as template code)
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Link {
     #[serde(default)]
     pub label: String,
@@ -26,7 +26,7 @@ pub struct Link {
     pub url: String,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Experience {
     #[serde(default)]
     pub title: String,
@@ -53,7 +53,7 @@ impl Experience {
     }
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Cv {
     #[serde(default)]
     pub name: String,
@@ -362,7 +362,16 @@ fn save_project(app: tauri::AppHandle, project: Project) -> Result<Project, Stri
 #[derive(Clone)]
 struct CachedRender {
     revision: u64,
+    /// The exact content these bytes were rendered from: export re-checks it so the
+    /// frontend cannot hand over a newer CV beside an older artifact.
+    cv: Cv,
     bytes: Vec<u8>,
+}
+
+impl CachedRender {
+    fn matches(&self, revision: u64, cv: &Cv) -> bool {
+        self.revision == revision && &self.cv == cv
+    }
 }
 
 #[derive(Default)]
@@ -383,7 +392,7 @@ fn render_pdf(cv: Cv, revision: u64, cache: tauri::State<RenderCache>) -> Result
     if cached.as_ref().is_some_and(|c| c.revision > revision) {
         return Err("stale render discarded".into());
     }
-    *cached = Some(CachedRender { revision, bytes: pdf.clone() });
+    *cached = Some(CachedRender { revision, cv, bytes: pdf.clone() });
     Ok(tauri::ipc::Response::new(pdf))
 }
 
@@ -404,8 +413,9 @@ fn export_pdf(
         .unwrap()
         .clone()
         .ok_or_else(|| "nothing has been rendered yet".to_string())?;
-    if cached.revision != revision {
-        return Err("preview is for a different revision; render again before exporting".into());
+    // Rust, not the frontend, proves these bytes belong to the validated CV.
+    if !cached.matches(revision, &cv) {
+        return Err("preview is out of date; render it again before exporting".into());
     }
     // The dialog is advisory: only a .pdf destination is ever written.
     if !path.to_ascii_lowercase().ends_with(".pdf") {
@@ -678,6 +688,17 @@ mod tests {
         }
         assert!(project_path(&dir, "0a1b2c").is_ok());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cached_bytes_only_match_the_content_they_were_rendered_from() {
+        let cached = CachedRender { revision: 4, cv: fixture(1, 6), bytes: b"%PDF".to_vec() };
+        assert!(cached.matches(4, &fixture(1, 6)), "same revision and content must match");
+
+        let mut edited = fixture(1, 6);
+        edited.summary = "Edited after the preview was rendered.".into();
+        assert!(!cached.matches(4, &edited), "newer content must not be exported with older bytes");
+        assert!(!cached.matches(5, &fixture(1, 6)), "a different revision must not match");
     }
 
     #[test]
