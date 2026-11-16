@@ -1,14 +1,34 @@
 export type Link = { label: string; url: string };
 
+/** A career date: month/year, year only, or no value. A missing month stays missing. */
+export type CvDate = { year: number | null; month: number | null };
+
 export type Experience = {
   title: string;
   company: string;
   location: string;
-  start: string;
-  // null means an ongoing role (Present); "" means no end was recorded.
-  end: string | null;
+  start: CvDate;
+  // null means an ongoing role (Present); an empty date means no end recorded.
+  end: CvDate | null;
   bullets: string[];
 };
+
+export type Education = {
+  school: string;
+  degree: string;
+  location: string;
+  start: CvDate;
+  end: CvDate | null;
+  bullets: string[];
+};
+
+export type SkillGroup = { name: string; bullets: string[] };
+
+export type ProjectEntry = { name: string; detail: string; bullets: string[] };
+
+export type Certification = { name: string; issuer: string; date: CvDate };
+
+export type Language = { name: string; level: string };
 
 export type Cv = {
   name: string;
@@ -18,6 +38,11 @@ export type Cv = {
   links: Link[];
   summary: string;
   experience: Experience[];
+  education: Education[];
+  skills: SkillGroup[];
+  projects: ProjectEntry[];
+  certifications: Certification[];
+  languages: Language[];
 };
 
 export type Structure = 'reverse-chronological' | 'functional' | 'combination';
@@ -41,7 +66,30 @@ export type ProjectSummary = {
   updated_at: number;
 };
 
-export type ExportAck = { path: string; bytes: number; sha256: string };
+export type ExportAck = {
+  path: string;
+  bytes: number;
+  sha256: string;
+  warnings: string[];
+};
+
+/** Interface month labels; the PDF prints the same names shortened to three letters. */
+export const MONTHS = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+];
+
+export const emptyDate = (): CvDate => ({ year: null, month: null });
 
 export const emptyCv = (): Cv => ({
   name: '',
@@ -51,16 +99,43 @@ export const emptyCv = (): Cv => ({
   links: [],
   summary: '',
   experience: [],
+  education: [],
+  skills: [],
+  projects: [],
+  certifications: [],
+  languages: [],
 });
 
 export const emptyExperience = (): Experience => ({
   title: '',
   company: '',
   location: '',
-  start: '',
-  end: '',
+  start: emptyDate(),
+  end: emptyDate(),
   bullets: [],
 });
+
+export const emptyEducation = (): Education => ({
+  school: '',
+  degree: '',
+  location: '',
+  start: emptyDate(),
+  end: emptyDate(),
+  bullets: [],
+});
+
+export const emptySkill = (): SkillGroup => ({ name: '', bullets: [] });
+export const emptyProject = (): ProjectEntry => ({ name: '', detail: '', bullets: [] });
+export const emptyCertification = (): Certification => ({ name: '', issuer: '', date: emptyDate() });
+export const emptyLanguage = (): Language => ({ name: '', level: '' });
+
+/** Move one item to another index: the only reordering mechanism in the editor. */
+export const moved = <T,>(items: T[], from: number, to: number): T[] => {
+  const next = items.slice();
+  const [item] = next.splice(from, 1);
+  next.splice(to, 0, item);
+  return next;
+};
 
 /** A CV with no project title or full name yet is still identifiable in the library. */
 export const projectLabel = (project: { title: string; name: string }): string =>

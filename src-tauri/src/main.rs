@@ -26,6 +26,42 @@ pub struct Link {
     pub url: String,
 }
 
+/// A career date with month/year precision, year-only precision, or no value.
+/// `month` is only ever written when the user selected one: a missing month is
+/// never materialized, so year-only records stay year-only.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CvDate {
+    #[serde(default)]
+    pub year: Option<u16>,
+    #[serde(default)]
+    pub month: Option<u8>,
+}
+
+impl CvDate {
+    fn is_empty(&self) -> bool {
+        self.year.is_none()
+    }
+
+    /// Only provable contradictions: both years are known, or the same year with
+    /// both months known. A year-only side never proves a month is wrong.
+    fn contradicts(&self, end: &CvDate) -> bool {
+        let (Some(start_year), Some(end_year)) = (self.year, end.year) else {
+            return false;
+        };
+        if start_year != end_year {
+            return start_year > end_year;
+        }
+        matches!((self.month, end.month), (Some(start), Some(end)) if start > end)
+    }
+
+    /// The documented contract is 1-12 and never a month without a year. A
+    /// hand-edited file must fail with a message, not inside the template.
+    fn shape_is_valid(&self) -> bool {
+        self.month
+            .is_none_or(|month| (1..=12).contains(&month) && self.year.is_some())
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Experience {
     #[serde(default)]
@@ -35,9 +71,10 @@ pub struct Experience {
     #[serde(default)]
     pub location: String,
     #[serde(default)]
-    pub start: String,
+    pub start: CvDate,
+    /// `None` means an ongoing role (Present); an empty date means no end recorded.
     #[serde(default)]
-    pub end: Option<String>,
+    pub end: Option<CvDate>,
     #[serde(default)]
     pub bullets: Vec<String>,
 }
@@ -45,11 +82,103 @@ pub struct Experience {
 impl Experience {
     /// A draft entry nobody has filled in yet: it must not reach the PDF.
     fn is_blank(&self) -> bool {
-        [&self.title, &self.company, &self.location, &self.start]
+        [&self.title, &self.company, &self.location]
             .iter()
             .all(|text| text.trim().is_empty())
-            && self.end.as_deref().unwrap_or("").trim().is_empty()
+            && self.start.is_empty()
+            && self.end.is_none_or(|end| end.is_empty())
             && self.bullets.iter().all(|bullet| bullet.trim().is_empty())
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Education {
+    #[serde(default)]
+    pub school: String,
+    #[serde(default)]
+    pub degree: String,
+    #[serde(default)]
+    pub location: String,
+    #[serde(default)]
+    pub start: CvDate,
+    #[serde(default)]
+    pub end: Option<CvDate>,
+    #[serde(default)]
+    pub bullets: Vec<String>,
+}
+
+impl Education {
+    fn is_blank(&self) -> bool {
+        [&self.school, &self.degree, &self.location]
+            .iter()
+            .all(|text| text.trim().is_empty())
+            && self.start.is_empty()
+            && self.end.is_none_or(|end| end.is_empty())
+            && self.bullets.iter().all(|bullet| bullet.trim().is_empty())
+    }
+}
+
+/// A named skill group. Reverse chronological CVs use it as supporting content;
+/// the group's achievements lead in functional and combination structures.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SkillGroup {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub bullets: Vec<String>,
+}
+
+impl SkillGroup {
+    fn is_blank(&self) -> bool {
+        self.name.trim().is_empty() && self.bullets.iter().all(|bullet| bullet.trim().is_empty())
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ProjectEntry {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub detail: String,
+    #[serde(default)]
+    pub bullets: Vec<String>,
+}
+
+impl ProjectEntry {
+    fn is_blank(&self) -> bool {
+        [&self.name, &self.detail].iter().all(|text| text.trim().is_empty())
+            && self.bullets.iter().all(|bullet| bullet.trim().is_empty())
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Certification {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub issuer: String,
+    #[serde(default)]
+    pub date: CvDate,
+}
+
+impl Certification {
+    fn is_blank(&self) -> bool {
+        [&self.name, &self.issuer].iter().all(|text| text.trim().is_empty())
+            && self.date.is_empty()
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Language {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub level: String,
+}
+
+impl Language {
+    fn is_blank(&self) -> bool {
+        self.name.trim().is_empty() && self.level.trim().is_empty()
     }
 }
 
@@ -69,6 +198,16 @@ pub struct Cv {
     pub summary: String,
     #[serde(default)]
     pub experience: Vec<Experience>,
+    #[serde(default)]
+    pub education: Vec<Education>,
+    #[serde(default)]
+    pub skills: Vec<SkillGroup>,
+    #[serde(default)]
+    pub projects: Vec<ProjectEntry>,
+    #[serde(default)]
+    pub certifications: Vec<Certification>,
+    #[serde(default)]
+    pub languages: Vec<Language>,
 }
 
 impl Cv {
@@ -77,14 +216,186 @@ impl Cv {
         if self.name.trim().is_empty() {
             return Some("Add the CV owner's full name before exporting.".into());
         }
-        if self.summary.trim().is_empty() && !self.experience.iter().any(|e| !e.is_blank()) {
+        let substantive = !self.summary.trim().is_empty()
+            || self.experience.iter().any(|e| !e.is_blank())
+            || self.education.iter().any(|e| !e.is_blank())
+            || self.skills.iter().any(|s| !s.is_blank())
+            || self.projects.iter().any(|p| !p.is_blank())
+            || self.certifications.iter().any(|c| !c.is_blank())
+            || self.languages.iter().any(|l| !l.is_blank());
+        if !substantive {
             return Some(
-                "Add a professional summary or at least one work experience entry before exporting."
+                "Add a professional summary or at least one work experience, education, skill, \
+                 project, certification, or language entry before exporting."
                     .into(),
             );
         }
+        if !self.email.trim().is_empty() && !valid_email(&self.email) {
+            return Some("The email address is not valid. Fix it or clear it before exporting.".into());
+        }
+        if let Some(link) = self.links.iter().find(|l| !l.url.trim().is_empty() && !valid_web_link(&l.url)) {
+            let label = if link.label.trim().is_empty() {
+                "a link".to_string()
+            } else {
+                format!("\"{}\"", link.label.trim())
+            };
+            return Some(format!(
+                "The web link for {label} is not valid: it must start with http:// or https:// and \
+                 contain no spaces. Fix it or clear it before exporting."
+            ));
+        }
+        if let Some(problem) = self.date_shape_problem() {
+            return Some(problem);
+        }
+        self.date_problem()
+    }
+
+    /// Warnings never block export: they name optional content the PDF will lack.
+    fn export_warnings(&self) -> Vec<String> {
+        let mut warnings = Vec::new();
+        if self.email.trim().is_empty() && self.phone.trim().is_empty() {
+            warnings.push(
+                "No email or phone number is included, so the PDF gives employers no way to contact you."
+                    .into(),
+            );
+        }
+        let undated = self
+            .experience
+            .iter()
+            .filter(|entry| !entry.is_blank())
+            .map(|entry| entry.start.year.is_none())
+            .chain(
+                self.education
+                    .iter()
+                    .filter(|entry| !entry.is_blank())
+                    .map(|entry| entry.start.year.is_none()),
+            )
+            .filter(|missing| *missing)
+            .count();
+        if undated > 0 {
+            warnings.push(
+                "Some entries have no start date, so they are listed after dated entries.".into(),
+            );
+        }
+        warnings
+    }
+
+    /// A month outside 1-12, or a month without a year, is corrupt data rather
+    /// than user input; refuse it before it reaches the template.
+    fn date_shape_problem(&self) -> Option<String> {
+        let invalid = self
+            .experience
+            .iter()
+            .map(|entry| ("work experience", &entry.start, entry.end.as_ref()))
+            .chain(self.education.iter().map(|entry| ("education", &entry.start, entry.end.as_ref())))
+            .chain(self.certifications.iter().map(|entry| ("certification", &entry.date, None)))
+            .find(|(_, start, end)| {
+                !start.shape_is_valid() || end.is_some_and(|end| !end.shape_is_valid())
+            });
+        invalid.map(|(section, _, _)| {
+            format!("Fix the dates for the {section}: a month must be between 1 and 12 and needs a year.")
+        })
+    }
+
+    fn date_problem(&self) -> Option<String> {
+        let histories = self
+            .experience
+            .iter()
+            .map(|entry| ("Work experience", entry.title.as_str(), &entry.start, entry.end.as_ref()))
+            .chain(self.education.iter().map(|entry| {
+                ("Education", entry.degree.as_str(), &entry.start, entry.end.as_ref())
+            }));
+        for (section, label, start, end) in histories {
+            let Some(end) = end else { continue };
+            if start.contradicts(end) {
+                let name = if label.trim().is_empty() {
+                    "entry".to_string()
+                } else {
+                    format!("\"{}\"", label.trim())
+                };
+                return Some(format!(
+                    "Fix the dates for {section} {name}: the start date is after the end date."
+                ));
+            }
+        }
         None
     }
+
+    /// The PDF presents dated histories chronologically; project files keep the
+    /// user's manual order so ties and imprecise dates are never re-ordered.
+    fn render_view(&self) -> Cv {
+        let mut view = self.clone();
+        view.experience = ordered_histories(&self.experience, |e| &e.start, |e| e.end.is_none());
+        view.education = ordered_histories(&self.education, |e| &e.start, |e| e.end.is_none());
+        view
+    }
+}
+
+fn valid_email(email: &str) -> bool {
+    let email = email.trim();
+    if email.chars().any(char::is_whitespace) {
+        return false;
+    }
+    let mut parts = email.split('@');
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(local), Some(domain), None) => {
+            !local.is_empty()
+                && !domain.is_empty()
+                && domain.contains('.')
+                && !domain.starts_with('.')
+                && !domain.ends_with('.')
+        }
+        _ => false,
+    }
+}
+
+fn valid_web_link(url: &str) -> bool {
+    let url = url.trim();
+    if url.chars().any(char::is_whitespace) {
+        return false;
+    }
+    url.strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .is_some_and(|rest| !rest.is_empty() && !rest.starts_with('/'))
+}
+
+/// Ongoing entries with a known start first, then newest known start year, then
+/// undated entries (ongoing or not) last. Within a year, months only establish
+/// an order when every entry has one; otherwise the user's manual order is kept.
+/// This avoids a comparator that pretends a year-only date is newer or older
+/// than a month-precision one.
+fn ordered_histories<T: Clone>(
+    entries: &[T],
+    start: impl Fn(&T) -> &CvDate,
+    ongoing: impl Fn(&T) -> bool,
+) -> Vec<T> {
+    let mut out: Vec<T> = entries
+        .iter()
+        .filter(|entry| ongoing(entry) && start(entry).year.is_some())
+        .cloned()
+        .collect();
+
+    let mut years: Vec<u16> = entries
+        .iter()
+        .filter(|entry| !ongoing(entry))
+        .filter_map(|entry| start(entry).year)
+        .collect();
+    years.sort_unstable_by(|a, b| b.cmp(a));
+    years.dedup();
+    for year in years {
+        let mut group: Vec<T> = entries
+            .iter()
+            .filter(|entry| !ongoing(entry) && start(entry).year == Some(year))
+            .cloned()
+            .collect();
+        if group.iter().all(|entry| start(entry).month.is_some()) {
+            group.sort_by_key(|entry| std::cmp::Reverse(start(entry).month));
+        }
+        out.extend(group);
+    }
+
+    out.extend(entries.iter().filter(|entry| start(entry).year.is_none()).cloned());
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -190,7 +501,11 @@ fn diagnostics_message(diagnostics: &[SourceDiagnostic]) -> String {
 }
 
 fn render_document(cv: &Cv) -> Result<PagedDocument, String> {
-    let world = CvWorld::new(cv)?;
+    if let Some(problem) = cv.date_shape_problem() {
+        return Err(problem);
+    }
+    let view = cv.render_view();
+    let world = CvWorld::new(&view)?;
     typst::compile::<PagedDocument>(&world)
         .output
         .map_err(|diagnostics| format!("render failed: {}", diagnostics_message(&diagnostics)))
@@ -382,6 +697,7 @@ pub struct ExportAck {
     path: String,
     bytes: usize,
     sha256: String,
+    warnings: Vec<String>,
 }
 
 #[tauri::command]
@@ -426,6 +742,7 @@ fn export_pdf(
         path,
         bytes: cached.bytes.len(),
         sha256: hex(&cached.bytes),
+        warnings: cv.export_warnings(),
     })
 }
 
@@ -479,6 +796,10 @@ mod tests {
 
     use super::*;
 
+    fn date(year: u16, month: Option<u8>) -> CvDate {
+        CvDate { year: Some(year), month }
+    }
+
     fn fixture(bullets: usize, bullet_len: usize) -> Cv {
         Cv {
             name: "Ada Lovelace".into(),
@@ -492,11 +813,12 @@ mod tests {
                     title: format!("Engineer {i}"),
                     company: "Analytical Engines Ltd".into(),
                     location: "London".into(),
-                    start: "Jan 2020".into(),
-                    end: Some("Dec 2021".into()),
+                    start: date(2020, Some(1)),
+                    end: Some(date(2021, Some(12))),
                     bullets: (0..bullets).map(|b| format!("Achievement {b} {}", "x".repeat(bullet_len))).collect(),
                 })
                 .collect(),
+            ..Cv::default()
         }
     }
 
@@ -753,11 +1075,11 @@ mod tests {
         cv.summary = "Analytical engine programmer.".into();
         cv.experience = vec![Experience {
             title: "Engineer".into(),
-            start: "2020".into(),
-            end: Some(String::new()),
+            start: date(2020, None),
+            end: Some(CvDate::default()),
             ..Default::default()
         }];
-        // An empty end string means "no end recorded", not an ongoing role.
+        // An empty end date means "no end recorded", not an ongoing role.
         let text = document_text(&render_document(&cv).unwrap());
         assert!(text.contains("2020"), "{text:?}");
         assert!(!text.contains("Present"), "empty end became Present: {text:?}");
@@ -767,5 +1089,413 @@ mod tests {
         cv.experience[0].end = None;
         let text = document_text(&render_document(&cv).unwrap());
         assert!(text.contains("Present"), "an ongoing role still says Present: {text:?}");
+    }
+
+    // --- ticket 03: all career sections, date precision, ordering, validation ---
+
+    fn entry(title: &str, start: CvDate, end: Option<CvDate>) -> Experience {
+        Experience { title: title.into(), start, end, ..Default::default() }
+    }
+
+    #[test]
+    fn mixed_date_precision_never_invents_a_month() {
+        let mut cv = Cv::default();
+        cv.name = "Ada Lovelace".into();
+        cv.summary = "Analytical engine programmer.".into();
+        cv.experience = vec![
+            Experience {
+                title: "Month role".into(),
+                start: date(2021, Some(3)),
+                end: Some(date(2022, Some(6))),
+                ..Default::default()
+            },
+            Experience {
+                title: "Year role".into(),
+                start: date(2019, None),
+                end: Some(CvDate::default()),
+                ..Default::default()
+            },
+        ];
+
+        let text = document_text(&render_document(&cv).unwrap());
+        assert!(text.contains("Mar 2021 – Jun 2022"), "month precision lost: {text:?}");
+        assert!(text.contains("(2019)"), "year-only start missing: {text:?}");
+        assert!(!text.contains("Jan 2019"), "a missing month was materialized: {text:?}");
+        assert!(!text.contains("2019 – "), "an empty end rendered a separator: {text:?}");
+    }
+
+    #[test]
+    fn ongoing_entries_lead_then_newest_start_then_undated() {
+        let roles = vec![
+            entry("Older current", date(2018, None), None),
+            entry("Undated", CvDate::default(), Some(CvDate::default())),
+            entry("Newest", date(2022, Some(5)), Some(date(2022, Some(6)))),
+            entry("Current", date(2019, Some(2)), None),
+            entry("Older", date(2020, None), Some(date(2021, None))),
+            entry("Ongoing undated", CvDate::default(), None),
+        ];
+        let ordered = ordered_histories(&roles, |e| &e.start, |e| e.end.is_none());
+        let titles: Vec<&str> = ordered.iter().map(|e| e.title.as_str()).collect();
+        // An ongoing entry with no start is still undated, so it lands last
+        // where export_warnings says undated entries go.
+        assert_eq!(
+            titles,
+            ["Older current", "Current", "Newest", "Older", "Undated", "Ongoing undated"]
+        );
+    }
+
+    #[test]
+    fn equal_or_imprecise_dates_keep_the_manual_order() {
+        // All months known: newest month first, equal months keep manual order.
+        let closed = Some(CvDate::default());
+        let dated = vec![
+            entry("January", date(2021, Some(1)), closed),
+            entry("March", date(2021, Some(3)), closed),
+            entry("Also March", date(2021, Some(3)), closed),
+        ];
+        let titles = |entries: Vec<Experience>| -> Vec<String> {
+            entries.into_iter().map(|entry| entry.title).collect()
+        };
+        assert_eq!(
+            titles(ordered_histories(&dated, |e| &e.start, |e| e.end.is_none())),
+            ["March", "Also March", "January"]
+        );
+
+        // One year-only entry in the year: the month cannot prove an order for
+        // the whole group, so every entry in that year keeps its manual order.
+        let mixed = vec![
+            entry("January", date(2021, Some(1)), closed),
+            entry("Year only", date(2021, None), closed),
+            entry("March", date(2021, Some(3)), closed),
+        ];
+        assert_eq!(
+            titles(ordered_histories(&mixed, |e| &e.start, |e| e.end.is_none())),
+            ["January", "Year only", "March"]
+        );
+
+        // Undated entries keep their relative manual order at the end.
+        let undated = vec![
+            entry("First undated", CvDate::default(), closed),
+            entry("Second undated", CvDate::default(), closed),
+        ];
+        assert_eq!(
+            titles(ordered_histories(&undated, |e| &e.start, |e| e.end.is_none())),
+            ["First undated", "Second undated"]
+        );
+    }
+
+    #[test]
+    fn contradictory_ranges_block_export_but_imprecise_ones_do_not() {
+        let mut cv = fixture(1, 6);
+        cv.experience[0].start = date(2022, Some(1));
+        cv.experience[0].end = Some(date(2021, Some(12)));
+        assert!(
+            cv.export_problem().unwrap().contains("start date is after the end date"),
+            "a later start year must be rejected"
+        );
+
+        cv.experience[0].start = date(2021, Some(6));
+        cv.experience[0].end = Some(date(2021, Some(3)));
+        assert!(cv.export_problem().unwrap().contains("start date is after the end date"));
+
+        // A year-only end cannot prove a month contradiction.
+        cv.experience[0].end = Some(date(2021, None));
+        assert!(cv.export_problem().is_none(), "year-only end was treated as a contradiction");
+
+        // The same year with no months is a tie, not a contradiction.
+        cv.experience[0].start = date(2021, None);
+        cv.experience[0].end = Some(date(2021, None));
+        assert!(cv.export_problem().is_none());
+
+        // Ongoing roles never contradict themselves.
+        cv.experience[0].start = date(2024, Some(2));
+        cv.experience[0].end = None;
+        assert!(cv.export_problem().is_none());
+    }
+
+    #[test]
+    fn malformed_supplied_email_or_links_block_export() {
+        let mut cv = fixture(1, 6);
+
+        cv.email = "ada@".into();
+        assert!(cv.export_problem().unwrap().contains("email address is not valid"));
+        cv.email = "ada lovelace@example.invalid".into();
+        assert!(cv.export_problem().unwrap().contains("email address is not valid"));
+        cv.email = "ada@example".into();
+        assert!(cv.export_problem().unwrap().contains("email address is not valid"));
+        cv.email = "ada@example.invalid".into();
+        assert!(cv.export_problem().is_none(), "a structurally valid email was rejected");
+
+        // Clearing an optional email is allowed: the draft stays incomplete.
+        cv.email = "   ".into();
+        assert!(cv.export_problem().is_none(), "empty email must not block export");
+        cv.email = "ada@example.invalid".into();
+
+        cv.links = vec![Link { label: "Portfolio".into(), url: "example.invalid".into() }];
+        assert!(cv.export_problem().unwrap().contains("must start with http:// or https://"));
+        cv.links[0].url = "https://example.invalid/a b".into();
+        assert!(cv.export_problem().unwrap().contains("must start with http:// or https://"));
+        cv.links[0].url = "https://example.invalid/portfolio".into();
+        assert!(cv.export_problem().is_none(), "a valid link was rejected");
+    }
+
+    #[test]
+    fn every_career_section_reaches_the_pdf_in_order() {
+        let mut cv = fixture(1, 6);
+        cv.education = vec![Education {
+            school: "Test University".into(),
+            degree: "BSc Testing".into(),
+            location: "Testville".into(),
+            start: date(2016, Some(8)),
+            end: Some(date(2019, Some(5))),
+            bullets: vec!["Graduated with honours.".into()],
+        }];
+        cv.skills = vec![SkillGroup {
+            name: "Test automation".into(),
+            bullets: vec!["Wrote regression checks.".into()],
+        }];
+        cv.projects = vec![ProjectEntry {
+            name: "Synthetic project".into(),
+            detail: "Local tooling".into(),
+            bullets: vec!["Built a local renderer.".into()],
+        }];
+        cv.certifications = vec![Certification {
+            name: "Certified tester".into(),
+            issuer: "Test board".into(),
+            date: date(2023, None),
+        }];
+        cv.languages = vec![Language { name: "Indonesian".into(), level: "Native".into() }];
+
+        let text = document_text(&render_document(&cv).unwrap());
+        for expected in [
+            "PROFESSIONAL SUMMARY",
+            "WORK EXPERIENCE",
+            "EDUCATION",
+            "BSc Testing",
+            "Test University",
+            "Aug 2016 – May 2019",
+            "Graduated with honours.",
+            "SKILLS",
+            "Test automation",
+            "Wrote regression checks.",
+            "PROJECTS",
+            "Synthetic project",
+            "Built a local renderer.",
+            "CERTIFICATIONS",
+            "Certified tester",
+            "Test board",
+            "(2023)",
+            "LANGUAGES",
+            "Indonesian — Native",
+        ] {
+            assert!(text.contains(expected), "missing {expected:?} in rendered text: {text:?}");
+        }
+
+        let mut position = 0;
+        for heading in [
+            "PROFESSIONAL SUMMARY",
+            "WORK EXPERIENCE",
+            "EDUCATION",
+            "SKILLS",
+            "PROJECTS",
+            "CERTIFICATIONS",
+            "LANGUAGES",
+        ] {
+            let found = text.find(heading).unwrap_or_else(|| panic!("{heading} missing"));
+            assert!(found >= position, "{heading} is out of order");
+            position = found;
+        }
+    }
+
+    #[test]
+    fn blank_new_section_entries_do_not_render() {
+        let mut cv = Cv::default();
+        cv.name = "Ada Lovelace".into();
+        cv.summary = "Analytical engine programmer.".into();
+        cv.education = vec![Education::default()];
+        cv.skills = vec![SkillGroup::default()];
+        cv.projects = vec![ProjectEntry::default()];
+        cv.certifications = vec![Certification::default()];
+        cv.languages = vec![Language::default(), Language { level: "  ".into(), ..Default::default() }];
+
+        let text = document_text(&render_document(&cv).unwrap());
+        for heading in ["EDUCATION", "SKILLS", "PROJECTS", "CERTIFICATIONS", "LANGUAGES"] {
+            assert!(!text.contains(heading), "blank {heading} section rendered: {text:?}");
+        }
+
+        cv.skills[0].name = "Test automation".into();
+        let text = document_text(&render_document(&cv).unwrap());
+        assert!(text.contains("SKILLS") && text.contains("Test automation"));
+        assert!(!text.contains("EDUCATION"), "still-blank sections stayed blank");
+    }
+
+    #[test]
+    fn all_career_sections_survive_a_saved_project_file() {
+        let dir = temp_dir("sections");
+        let mut project = project();
+        project.cv.education = vec![Education {
+            school: "Test University".into(),
+            degree: "BSc Testing".into(),
+            location: String::new(),
+            start: date(2016, Some(8)),
+            end: Some(date(2019, None)),
+            bullets: vec!["Graduated with honours.".into()],
+        }];
+        project.cv.skills = vec![SkillGroup { name: "Test automation".into(), bullets: vec!["Checks.".into()] }];
+        project.cv.projects = vec![ProjectEntry { name: "Synthetic project".into(), detail: String::new(), bullets: vec![] }];
+        project.cv.certifications = vec![Certification { name: "Certified tester".into(), issuer: String::new(), date: date(2023, None) }];
+        project.cv.languages = vec![Language { name: "Indonesian".into(), level: "Native".into() }];
+        project.cv.links = vec![Link { label: "Portfolio".into(), url: "https://example.invalid/portfolio".into() }];
+
+        write_project(&dir, &project).unwrap();
+        let reopened = read_project(&dir, &project.id).unwrap();
+
+        assert_eq!(reopened.cv.education[0].start, date(2016, Some(8)), "month precision lost on disk");
+        assert_eq!(reopened.cv.education[0].end, Some(date(2019, None)), "year-only end gained a month");
+        assert_eq!(reopened.cv.skills[0].bullets, ["Checks."]);
+        assert_eq!(reopened.cv.projects[0].name, "Synthetic project");
+        assert_eq!(reopened.cv.certifications[0].date, date(2023, None));
+        assert_eq!(reopened.cv.languages[0].level, "Native");
+        assert_eq!(reopened.cv.links[0].url, "https://example.invalid/portfolio");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn invalid_date_shapes_are_refused_before_rendering() {
+        let mut cv = fixture(1, 6);
+
+        // Hand-edited or imported data: a month outside 1-12.
+        cv.experience[0].start = CvDate { year: Some(2020), month: Some(13) };
+        assert!(
+            cv.export_problem().unwrap().contains("between 1 and 12"),
+            "an out-of-range month must block export"
+        );
+        assert!(
+            render_document(&cv).is_err(),
+            "an out-of-range month must not reach the template"
+        );
+
+        // A month without a year cannot be rendered meaningfully either.
+        cv.experience[0].start = CvDate { year: None, month: Some(5) };
+        assert!(cv.export_problem().unwrap().contains("between 1 and 12"));
+        assert!(render_document(&cv).is_err());
+
+        cv.experience[0].start = date(2020, Some(12));
+        assert!(cv.export_problem().is_none(), "a valid date must still export");
+        assert!(render_document(&cv).is_ok());
+    }
+
+    #[test]
+    fn every_section_survives_a_multipage_pdf() {
+        // Enough authored content to paginate, all sections present in one document.
+        let mut cv = fixture(6, 140);
+        cv.education = vec![Education {
+            school: "Test University".into(),
+            degree: "BSc Testing".into(),
+            location: "Testville".into(),
+            start: date(2016, Some(8)),
+            end: Some(date(2019, None)),
+            bullets: vec!["Graduated with honours.".into()],
+        }];
+        cv.skills = vec![SkillGroup {
+            name: "Test automation".into(),
+            bullets: vec!["Wrote regression checks.".into()],
+        }];
+        cv.projects = vec![ProjectEntry {
+            name: "Synthetic project".into(),
+            detail: "Local tooling".into(),
+            bullets: vec!["Built a local renderer.".into()],
+        }];
+        cv.certifications = vec![Certification {
+            name: "Certified tester".into(),
+            issuer: "Test board".into(),
+            date: date(2023, None),
+        }];
+        cv.languages = vec![Language { name: "Indonesian".into(), level: "Native".into() }];
+
+        let document = render_document(&cv).unwrap();
+        assert!(document.pages().len() > 1, "expected multipage output, got {}", document.pages().len());
+
+        let text = document_text(&document);
+        for expected in [
+            "PROFESSIONAL SUMMARY",
+            "WORK EXPERIENCE",
+            "EDUCATION",
+            "SKILLS",
+            "PROJECTS",
+            "CERTIFICATIONS",
+            "LANGUAGES",
+            "BSc Testing",
+            "Test automation",
+            "Synthetic project",
+            "Certified tester",
+            "Indonesian — Native",
+            "Achievement 5",
+        ] {
+            assert!(text.contains(expected), "missing {expected:?} in multipage text");
+        }
+
+        // External pdftotext/pdfinfo evidence for the acceptance notes.
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.scratch/evidence/ticket03");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("experienced-multipage.pdf"), render(&cv).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn fresh_graduate_cv_exports_without_employment() {
+        let cv = Cv {
+            name: "Synthetic Graduate".into(),
+            email: "graduate@example.invalid".into(),
+            location: "Testville".into(),
+            summary: "Synthetic fresh graduate.".into(),
+            education: vec![Education {
+                school: "Test University".into(),
+                degree: "BSc Testing".into(),
+                start: date(2022, None),
+                end: Some(date(2025, None)),
+                ..Default::default()
+            }],
+            projects: vec![ProjectEntry {
+                name: "Synthetic project".into(),
+                detail: "Coursework".into(),
+                bullets: vec!["Built a fixture project.".into()],
+            }],
+            ..Cv::default()
+        };
+        assert!(cv.export_problem().is_none(), "education and projects are substantive content");
+
+        let document = render_document(&cv).unwrap();
+        assert_eq!(document.pages().len(), 1);
+        let text = document_text(&document);
+        assert!(!text.contains("WORK EXPERIENCE"), "fresh graduate invented work history: {text:?}");
+        for expected in ["EDUCATION", "BSc Testing", "PROJECTS", "Synthetic project"] {
+            assert!(text.contains(expected), "missing {expected:?} in fresh-graduate text");
+        }
+
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.scratch/evidence/ticket03");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("fresh-graduate.pdf"), render(&cv).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn export_warnings_name_missing_optional_content() {
+        let mut cv = fixture(1, 6);
+        assert!(cv.export_warnings().is_empty(), "a complete CV warns about nothing");
+
+        cv.email = String::new();
+        cv.phone = String::new();
+        assert!(
+            cv.export_warnings().iter().any(|w| w.contains("no way to contact you")),
+            "a CV without contact details must warn"
+        );
+
+        cv.phone = "555-0100".into();
+        assert!(cv.export_warnings().is_empty(), "one contact method is enough");
+
+        cv.experience[0].start = CvDate::default();
+        assert!(
+            cv.export_warnings().iter().any(|w| w.contains("no start date")),
+            "an included entry without a start date must warn"
+        );
     }
 }
