@@ -169,14 +169,14 @@ impl Certification {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct Language {
+pub struct LanguageEntry {
     #[serde(default)]
     pub name: String,
     #[serde(default)]
     pub level: String,
 }
 
-impl Language {
+impl LanguageEntry {
     fn is_blank(&self) -> bool {
         self.name.trim().is_empty() && self.level.trim().is_empty()
     }
@@ -207,14 +207,18 @@ pub struct Cv {
     #[serde(default)]
     pub certifications: Vec<Certification>,
     #[serde(default)]
-    pub languages: Vec<Language>,
+    pub languages: Vec<LanguageEntry>,
 }
 
 impl Cv {
     /// Export needs an owner name and one substantive non-contact section.
-    fn export_problem(&self) -> Option<String> {
+    /// Messages follow the interface language, never the CV content language.
+    fn export_problem(&self, lang: Language) -> Option<String> {
         if self.name.trim().is_empty() {
-            return Some("Add the CV owner's full name before exporting.".into());
+            return Some(lang.pick(
+                "Add the CV owner's full name before exporting.",
+                "Tambahkan nama lengkap pemilik CV sebelum mengekspor.",
+            ));
         }
         let substantive = !self.summary.trim().is_empty()
             || self.experience.iter().any(|e| !e.is_blank())
@@ -224,30 +228,40 @@ impl Cv {
             || self.certifications.iter().any(|c| !c.is_blank())
             || self.languages.iter().any(|l| !l.is_blank());
         if !substantive {
-            return Some(
+            return Some(lang.pick(
                 "Add a professional summary or at least one work experience, education, skill, \
-                 project, certification, or language entry before exporting."
-                    .into(),
-            );
+                 project, certification, or language entry before exporting.",
+                "Tambahkan ringkasan profesional atau setidaknya satu entri pengalaman kerja, \
+                 pendidikan, keahlian, proyek, sertifikasi, atau bahasa sebelum mengekspor.",
+            ));
         }
         if !self.email.trim().is_empty() && !valid_email(&self.email) {
-            return Some("The email address is not valid. Fix it or clear it before exporting.".into());
+            return Some(lang.pick(
+                "The email address is not valid. Fix it or clear it before exporting.",
+                "Alamat email tidak valid. Perbaiki atau kosongkan sebelum mengekspor.",
+            ));
         }
         if let Some(link) = self.links.iter().find(|l| !l.url.trim().is_empty() && !valid_web_link(&l.url)) {
             let label = if link.label.trim().is_empty() {
-                "a link".to_string()
+                lang.pick("a link", "sebuah tautan")
             } else {
                 format!("\"{}\"", link.label.trim())
             };
-            return Some(format!(
-                "The web link for {label} is not valid: it must start with http:// or https:// and \
-                 contain no spaces. Fix it or clear it before exporting."
+            return Some(lang.pick(
+                format!(
+                    "The web link for {label} is not valid: it must start with http:// or \
+                     https:// and contain no spaces. Fix it or clear it before exporting."
+                ),
+                format!(
+                    "Tautan web untuk {label} tidak valid: harus diawali http:// atau https:// \
+                     dan tidak boleh mengandung spasi. Perbaiki atau kosongkan sebelum mengekspor."
+                ),
             ));
         }
-        if let Some(problem) = self.date_shape_problem() {
+        if let Some(problem) = self.date_shape_problem(lang) {
             return Some(problem);
         }
-        self.date_problem()
+        self.date_problem(lang)
     }
 
     /// At least one skill group carries a user-authored achievement bullet.
@@ -259,26 +273,35 @@ impl Cv {
     }
 
     /// Warnings never block export: they name optional content the PDF will lack.
-    fn export_warnings(&self, structure: Structure) -> Vec<String> {
+    /// They follow the interface language, independently of the CV content.
+    fn export_warnings(&self, lang: Language, structure: Structure) -> Vec<String> {
         let mut warnings = Vec::new();
         if matches!(structure, Structure::Functional | Structure::Combination)
             && !self.has_skill_achievements()
         {
-            let name = if structure == Structure::Functional {
-                "functional"
+            let (name, id_name) = if structure == Structure::Functional {
+                ("functional", "fungsional")
             } else {
-                "combination"
+                ("combination", "kombinasi")
             };
-            warnings.push(format!(
-                "The {name} structure relies on skill-group achievements, but no skill group has \
-                 an achievement bullet yet. Add achievements or choose another structure."
+            warnings.push(lang.pick(
+                format!(
+                    "The {name} structure relies on skill-group achievements, but no skill group \
+                     has an achievement bullet yet. Add achievements or choose another structure."
+                ),
+                format!(
+                    "Struktur {id_name} mengandalkan pencapaian kelompok keahlian, tetapi belum ada \
+                     kelompok keahlian yang memiliki butir pencapaian. Tambahkan pencapaian atau \
+                     pilih struktur lain."
+                ),
             ));
         }
         if self.email.trim().is_empty() && self.phone.trim().is_empty() {
-            warnings.push(
-                "No email or phone number is included, so the PDF gives employers no way to contact you."
-                    .into(),
-            );
+            warnings.push(lang.pick(
+                "No email or phone number is included, so the PDF gives employers no way to contact you.",
+                "Tidak ada alamat email atau nomor telepon, sehingga pemberi kerja tidak memiliki \
+                 cara untuk menghubungi Anda.",
+            ));
         }
         let undated = self
             .experience
@@ -294,48 +317,83 @@ impl Cv {
             .filter(|missing| *missing)
             .count();
         if undated > 0 {
-            warnings.push(
-                "Some entries have no start date, so they are listed after dated entries.".into(),
-            );
+            warnings.push(lang.pick(
+                "Some entries have no start date, so they are listed after dated entries.",
+                "Beberapa entri tidak memiliki tanggal mulai, sehingga ditampilkan setelah entri \
+                 yang bertanggal.",
+            ));
         }
         warnings
     }
 
     /// A month outside 1-12, or a month without a year, is corrupt data rather
     /// than user input; refuse it before it reaches the template.
-    fn date_shape_problem(&self) -> Option<String> {
+    fn date_shape_problem(&self, lang: Language) -> Option<String> {
         let invalid = self
             .experience
             .iter()
-            .map(|entry| ("work experience", &entry.start, entry.end.as_ref()))
-            .chain(self.education.iter().map(|entry| ("education", &entry.start, entry.end.as_ref())))
-            .chain(self.certifications.iter().map(|entry| ("certification", &entry.date, None)))
-            .find(|(_, start, end)| {
+            .map(|entry| ("work experience", "pengalaman kerja", &entry.start, entry.end.as_ref()))
+            .chain(self.education.iter().map(|entry| {
+                ("education", "pendidikan", &entry.start, entry.end.as_ref())
+            }))
+            .chain(
+                self.certifications
+                    .iter()
+                    .map(|entry| ("certification", "sertifikasi", &entry.date, None)),
+            )
+            .find(|(_, _, start, end)| {
                 !start.shape_is_valid() || end.is_some_and(|end| !end.shape_is_valid())
             });
-        invalid.map(|(section, _, _)| {
-            format!("Fix the dates for the {section}: a month must be between 1 and 12 and needs a year.")
+        invalid.map(|(section, id_section, _, _)| {
+            lang.pick(
+                format!(
+                    "Fix the dates for the {section}: a month must be between 1 and 12 and needs a year."
+                ),
+                format!(
+                    "Perbaiki tanggal pada {id_section}: bulan harus antara 1 dan 12 dan memerlukan tahun."
+                ),
+            )
         })
     }
 
-    fn date_problem(&self) -> Option<String> {
+    fn date_problem(&self, lang: Language) -> Option<String> {
         let histories = self
             .experience
             .iter()
-            .map(|entry| ("Work experience", entry.title.as_str(), &entry.start, entry.end.as_ref()))
+            .map(|entry| {
+                (
+                    "Work experience",
+                    "Pengalaman kerja",
+                    entry.title.as_str(),
+                    &entry.start,
+                    entry.end.as_ref(),
+                )
+            })
             .chain(self.education.iter().map(|entry| {
-                ("Education", entry.degree.as_str(), &entry.start, entry.end.as_ref())
+                (
+                    "Education",
+                    "Pendidikan",
+                    entry.degree.as_str(),
+                    &entry.start,
+                    entry.end.as_ref(),
+                )
             }));
-        for (section, label, start, end) in histories {
+        for (section, id_section, label, start, end) in histories {
             let Some(end) = end else { continue };
             if start.contradicts(end) {
                 let name = if label.trim().is_empty() {
-                    "entry".to_string()
+                    lang.pick("entry", "entri")
                 } else {
                     format!("\"{}\"", label.trim())
                 };
-                return Some(format!(
-                    "Fix the dates for {section} {name}: the start date is after the end date."
+                return Some(lang.pick(
+                    format!(
+                        "Fix the dates for {section} {name}: the start date is after the end date."
+                    ),
+                    format!(
+                        "Perbaiki tanggal untuk {id_section} {name}: tanggal mulai lebih akhir \
+                         daripada tanggal selesai."
+                    ),
                 ));
             }
         }
@@ -462,18 +520,20 @@ struct CvWorld {
     data: Bytes,
 }
 
-/// What the fixed template receives: one CV and the selected structure.
-/// Both are data; the template only projects sections, it never mutates content.
+/// What the fixed template receives: one CV, the selected structure, and the
+/// content language that decides the standard headings and Present wording.
+/// All of it is data; the template only projects sections, it never mutates content.
 #[derive(Serialize)]
 struct RenderInput<'a> {
     structure: Structure,
+    language: Language,
     cv: &'a Cv,
 }
 
 impl CvWorld {
-    fn new(cv: &Cv, structure: Structure) -> Result<Self, String> {
+    fn new(cv: &Cv, structure: Structure, language: Language) -> Result<Self, String> {
         // User text travels as JSON data, never as Typst source.
-        let json = serde_json::to_string(&RenderInput { structure, cv }).map_err(|e| e.to_string())?;
+        let json = serde_json::to_string(&RenderInput { structure, language, cv }).map_err(|e| e.to_string())?;
         let source = Source::new(file_id("main.typ"), TEMPLATE.to_string());
         Ok(Self { main: source, data_id: file_id(DATA_PATH), data: Bytes::from_string(json) })
     }
@@ -529,21 +589,35 @@ fn diagnostics_message(diagnostics: &[SourceDiagnostic]) -> String {
         .join("; ")
 }
 
-fn render_document(cv: &Cv, structure: Structure) -> Result<PagedDocument, String> {
-    if let Some(problem) = cv.date_shape_problem() {
+fn render_document(cv: &Cv, structure: Structure, language: Language) -> Result<PagedDocument, String> {
+    if let Some(problem) = cv.date_shape_problem(language) {
         return Err(problem);
     }
     let view = cv.render_view();
-    let world = CvWorld::new(&view, structure)?;
+    let world = CvWorld::new(&view, structure, language)?;
     typst::compile::<PagedDocument>(&world)
         .output
         .map_err(|diagnostics| format!("render failed: {}", diagnostics_message(&diagnostics)))
 }
 
-pub fn render(cv: &Cv, structure: Structure) -> Result<Vec<u8>, String> {
-    let document = render_document(cv, structure)?;
+pub fn render(cv: &Cv, structure: Structure, language: Language) -> Result<Vec<u8>, String> {
+    let document = render_document(cv, structure, language)?;
     typst_pdf::pdf(&document, &typst_pdf::PdfOptions::default())
         .map_err(|diagnostics| format!("pdf export failed: {}", diagnostics_message(&diagnostics)))
+}
+
+/// Rendering itself follows the CV content language, but a validation failure
+/// is interface text: the person reading it picked the interface language.
+fn render_for(
+    cv: &Cv,
+    structure: Structure,
+    content_language: Language,
+    interface_language: Language,
+) -> Result<Vec<u8>, String> {
+    if let Some(problem) = cv.date_shape_problem(interface_language) {
+        return Err(problem);
+    }
+    render(cv, structure, content_language)
 }
 
 // ---------------------------------------------------------------------------
@@ -562,17 +636,29 @@ pub enum Structure {
     Combination,
 }
 
+/// Content and interface language. Both are user choices, independently
+/// selectable: one decides PDF headings, the other decides the interface text.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
-pub enum ContentLanguage {
+pub enum Language {
     #[default]
     English,
     Indonesian,
 }
 
+impl Language {
+    /// One message, two languages; `String` because messages carry values.
+    fn pick(self, english: impl Into<String>, indonesian: impl Into<String>) -> String {
+        match self {
+            Language::English => english.into(),
+            Language::Indonesian => indonesian.into(),
+        }
+    }
+}
+
 /// One independently editable CV. Structure is a presentation choice over the
-/// same content; content language is stored from the first schema version even
-/// while only English headings are offered.
+/// same content; content language selects the PDF headings without translating
+/// anything the user authored.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Project {
     pub version: u32,
@@ -582,7 +668,7 @@ pub struct Project {
     #[serde(default)]
     pub structure: Structure,
     #[serde(default)]
-    pub content_language: ContentLanguage,
+    pub content_language: Language,
     #[serde(default)]
     pub updated_at: u64,
     #[serde(default)]
@@ -618,6 +704,19 @@ fn project_path(dir: &Path, id: &str) -> Result<PathBuf, String> {
     }
     Ok(dir.join(format!("{id}.json")))
 }
+
+/// A fresh identity for a new project or a duplicate. Lowercase hex only, as
+/// documented: nanosecond clock concatenated with a process counter cannot
+/// repeat inside one process; ids never come from user input.
+fn new_project_id() -> String {
+    format!("{:x}{:013x}", now_nanos(), NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+}
+
+fn now_nanos() -> u128 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)
+}
+
+static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 fn read_project(dir: &Path, id: &str) -> Result<Project, String> {
     let path = project_path(dir, id)?;
@@ -677,17 +776,30 @@ fn list_projects(app: tauri::AppHandle) -> Result<Vec<ProjectSummary>, String> {
 
 #[tauri::command]
 fn create_project(app: tauri::AppHandle) -> Result<Project, String> {
-    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
     let project = Project {
         version: SCHEMA_VERSION,
-        id: format!("{nanos:x}"),
+        id: new_project_id(),
         title: String::new(),
         structure: Structure::default(),
-        content_language: ContentLanguage::default(),
+        content_language: Language::default(),
         updated_at: 0,
         cv: Cv::default(),
     };
     write_project(&projects_dir(&app)?, &project)
+}
+
+/// Duplicating copies every field — content, structure, and content language —
+/// into a new project id. The two files are unrelated afterwards: each later
+/// save writes only its own id.
+fn duplicate_in(dir: &Path, id: &str) -> Result<Project, String> {
+    let mut copy = read_project(dir, id)?;
+    copy.id = new_project_id();
+    write_project(dir, &copy)
+}
+
+#[tauri::command]
+fn duplicate_project(app: tauri::AppHandle, id: String) -> Result<Project, String> {
+    duplicate_in(&projects_dir(&app)?, &id)
 }
 
 #[tauri::command]
@@ -708,16 +820,17 @@ fn save_project(app: tauri::AppHandle, project: Project) -> Result<Project, Stri
 struct CachedRender {
     revision: u64,
     /// The exact input these bytes were rendered from: export re-checks it so the
-    /// frontend cannot hand over newer content or another structure beside older
-    /// artifacts. Same CV + different structure is a different document.
+    /// frontend cannot hand over newer content, another structure, or another
+    /// content language beside older artifacts.
     structure: Structure,
+    language: Language,
     cv: Cv,
     bytes: Vec<u8>,
 }
 
 impl CachedRender {
-    fn matches(&self, revision: u64, structure: Structure, cv: &Cv) -> bool {
-        self.revision == revision && self.structure == structure && &self.cv == cv
+    fn matches(&self, revision: u64, structure: Structure, language: Language, cv: &Cv) -> bool {
+        self.revision == revision && self.structure == structure && self.language == language && &self.cv == cv
     }
 }
 
@@ -736,16 +849,18 @@ pub struct ExportAck {
 fn render_pdf(
     cv: Cv,
     structure: Structure,
+    content_language: Language,
+    interface_language: Language,
     revision: u64,
     cache: tauri::State<RenderCache>,
 ) -> Result<tauri::ipc::Response, String> {
-    let pdf = render(&cv, structure)?;
+    let pdf = render_for(&cv, structure, content_language, interface_language)?;
     let mut cached = cache.0.lock().unwrap();
     // Concurrent invokes can finish out of order; keep the newest revision only.
     if cached.as_ref().is_some_and(|c| c.revision > revision) {
         return Err("stale render discarded".into());
     }
-    *cached = Some(CachedRender { revision, structure, cv, bytes: pdf.clone() });
+    *cached = Some(CachedRender { revision, structure, language: content_language, cv, bytes: pdf.clone() });
     Ok(tauri::ipc::Response::new(pdf))
 }
 
@@ -755,10 +870,13 @@ fn export_pdf(
     path: String,
     cv: Cv,
     structure: Structure,
+    content_language: Language,
+    interface_language: Language,
     cache: tauri::State<RenderCache>,
 ) -> Result<ExportAck, String> {
     // Rust owns export validation: drafts may be incomplete, exports may not.
-    if let Some(problem) = cv.export_problem() {
+    // The reader is the person using the interface, so its language is used here.
+    if let Some(problem) = cv.export_problem(interface_language) {
         return Err(problem);
     }
     let cached = cache
@@ -766,21 +884,32 @@ fn export_pdf(
         .lock()
         .unwrap()
         .clone()
-        .ok_or_else(|| "nothing has been rendered yet".to_string())?;
-    // Rust, not the frontend, proves these bytes belong to the validated CV and structure.
-    if !cached.matches(revision, structure, &cv) {
-        return Err("preview is out of date; render it again before exporting".into());
+        .ok_or_else(|| {
+            interface_language.pick(
+                "nothing has been rendered yet",
+                "belum ada pratinjau yang dirender",
+            )
+        })?;
+    // Rust, not the frontend, proves these bytes belong to the validated CV, structure, and language.
+    if !cached.matches(revision, structure, content_language, &cv) {
+        return Err(interface_language.pick(
+            "preview is out of date; render it again before exporting",
+            "pratinjau sudah tidak sesuai; render ulang sebelum mengekspor",
+        ));
     }
     // The dialog is advisory: only a .pdf destination is ever written.
     if !path.to_ascii_lowercase().ends_with(".pdf") {
-        return Err("destination must be a .pdf file".into());
+        return Err(interface_language.pick(
+            "destination must be a .pdf file",
+            "tujuan harus berupa berkas .pdf",
+        ));
     }
     save_atomically(Path::new(&path), &cached.bytes)?;
     Ok(ExportAck {
         path,
         bytes: cached.bytes.len(),
         sha256: hex(&cached.bytes),
-        warnings: cv.export_warnings(structure),
+        warnings: cv.export_warnings(interface_language, structure),
     })
 }
 
@@ -812,6 +941,7 @@ pub fn run() {
             export_pdf,
             list_projects,
             create_project,
+            duplicate_project,
             open_project,
             save_project
         ])
@@ -865,16 +995,16 @@ mod tests {
     fn writes_evidence_pdfs() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.scratch/evidence");
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("short.pdf"), render(&fixture(3, 60), Structure::ReverseChronological).unwrap()).unwrap();
-        fs::write(dir.join("multipage.pdf"), render(&fixture(12, 140), Structure::ReverseChronological).unwrap()).unwrap();
+        fs::write(dir.join("short.pdf"), render(&fixture(3, 60), Structure::ReverseChronological, Language::English).unwrap()).unwrap();
+        fs::write(dir.join("multipage.pdf"), render(&fixture(12, 140), Structure::ReverseChronological, Language::English).unwrap()).unwrap();
         let mut narrow = fixture(1, 0);
         narrow.summary = format!("Long token: {} and {}", "y".repeat(200), "https://example.invalid/".to_string() + &"segment/".repeat(30));
-        fs::write(dir.join("longtoken.pdf"), render(&narrow, Structure::ReverseChronological).unwrap()).unwrap();
+        fs::write(dir.join("longtoken.pdf"), render(&narrow, Structure::ReverseChronological, Language::English).unwrap()).unwrap();
     }
 
     #[test]
     fn renders_a4_multipage_pdf() {
-        let document = render_document(&fixture(12, 140), Structure::ReverseChronological).unwrap();
+        let document = render_document(&fixture(12, 140), Structure::ReverseChronological, Language::English).unwrap();
         assert!(
             document.pages().len() > 1,
             "expected multipage output, got {}",
@@ -883,13 +1013,13 @@ mod tests {
         let size = document.pages()[0].frame.size();
         assert!((size.x.to_pt() - 595.276).abs() < 0.1, "width {}", size.x.to_pt());
         assert!((size.y.to_pt() - 841.89).abs() < 0.1, "height {}", size.y.to_pt());
-        assert!(render(&fixture(12, 140), Structure::ReverseChronological).unwrap().starts_with(b"%PDF"));
+        assert!(render(&fixture(12, 140), Structure::ReverseChronological, Language::English).unwrap().starts_with(b"%PDF"));
     }
 
     #[test]
     fn different_content_renders_different_documents() {
-        let a = render(&fixture(3, 60), Structure::ReverseChronological).unwrap();
-        let b = render(&fixture(12, 140), Structure::ReverseChronological).unwrap();
+        let a = render(&fixture(3, 60), Structure::ReverseChronological, Language::English).unwrap();
+        let b = render(&fixture(12, 140), Structure::ReverseChronological, Language::English).unwrap();
         assert_ne!(a, b, "renderer returned a cached document for different content");
     }
 
@@ -913,7 +1043,7 @@ mod tests {
 
     #[test]
     fn rendered_text_stays_extractable() {
-        let text = document_text(&render_document(&fixture(1, 10), Structure::ReverseChronological).unwrap());
+        let text = document_text(&render_document(&fixture(1, 10), Structure::ReverseChronological, Language::English).unwrap());
         assert!(text.contains("Ada Lovelace"), "name missing from rendered text");
         assert!(text.contains("PROFESSIONAL SUMMARY"), "heading missing");
         assert!(text.contains("Achievement 0"), "bullet missing");
@@ -924,7 +1054,7 @@ mod tests {
         let mut cv = fixture(1, 4);
         cv.name = r#"#eval("read(\"/etc/passwd\")") *bold*"#.into();
         cv.summary = r#"#include "secret.json""#.into();
-        let text = document_text(&render_document(&cv, Structure::ReverseChronological).unwrap());
+        let text = document_text(&render_document(&cv, Structure::ReverseChronological, Language::English).unwrap());
         assert!(text.contains("#eval("), "authored text missing from output: {text}");
         assert!(text.contains("#include"), "authored include text missing");
         assert!(!text.contains("root:"), "user text was evaluated as code");
@@ -933,7 +1063,7 @@ mod tests {
 
     #[test]
     fn world_serves_only_its_declared_files() {
-        let world = CvWorld::new(&fixture(1, 1), Structure::ReverseChronological).unwrap();
+        let world = CvWorld::new(&fixture(1, 1), Structure::ReverseChronological, Language::English).unwrap();
         assert!(world.file(world.data_id).is_ok(), "template data file must load");
         let foreign = file_id("/etc/passwd");
         assert!(world.file(foreign).is_err(), "compiler must not read arbitrary files");
@@ -947,7 +1077,7 @@ mod tests {
         let target = dir.join("cv.pdf");
         fs::write(&target, b"older content").unwrap();
 
-        let pdf = render(&fixture(1, 10), Structure::ReverseChronological).unwrap();
+        let pdf = render(&fixture(1, 10), Structure::ReverseChronological, Language::English).unwrap();
         save_atomically(&target, &pdf).unwrap();
         assert_eq!(fs::read(&target).unwrap(), pdf, "exported bytes differ from rendered bytes");
         assert_eq!(hex(&pdf), hex(&fs::read(&target).unwrap()));
@@ -970,7 +1100,7 @@ mod tests {
             id: "0a1b2c".into(),
             title: String::new(),
             structure: Structure::default(),
-            content_language: ContentLanguage::default(),
+            content_language: Language::default(),
             updated_at: 0,
             cv: fixture(1, 6),
         }
@@ -1051,47 +1181,58 @@ mod tests {
     }
 
     #[test]
-    fn cached_bytes_only_match_the_content_and_structure_they_were_rendered_from() {
+    fn cached_bytes_only_match_the_content_structure_and_language_they_were_rendered_from() {
         let cached = CachedRender {
             revision: 4,
             structure: Structure::Functional,
+            language: Language::English,
             cv: fixture(1, 6),
             bytes: b"%PDF".to_vec(),
         };
         assert!(
-            cached.matches(4, Structure::Functional, &fixture(1, 6)),
-            "same revision, structure and content must match"
+            cached.matches(4, Structure::Functional, Language::English, &fixture(1, 6)),
+            "same revision, structure, language and content must match"
         );
 
         let mut edited = fixture(1, 6);
         edited.summary = "Edited after the preview was rendered.".into();
-        assert!(!cached.matches(4, Structure::Functional, &edited), "newer content must not be exported with older bytes");
-        assert!(!cached.matches(5, Structure::Functional, &fixture(1, 6)), "a different revision must not match");
         assert!(
-            !cached.matches(4, Structure::Combination, &fixture(1, 6)),
+            !cached.matches(4, Structure::Functional, Language::English, &edited),
+            "newer content must not be exported with older bytes"
+        );
+        assert!(
+            !cached.matches(5, Structure::Functional, Language::English, &fixture(1, 6)),
+            "a different revision must not match"
+        );
+        assert!(
+            !cached.matches(4, Structure::Combination, Language::English, &fixture(1, 6)),
             "a structure change must not reuse the old preview bytes"
+        );
+        assert!(
+            !cached.matches(4, Structure::Functional, Language::Indonesian, &fixture(1, 6)),
+            "a content language change must not reuse the old preview bytes"
         );
     }
 
     #[test]
     fn export_requires_a_name_and_a_non_contact_section() {
         let mut cv = Cv::default();
-        assert!(cv.export_problem().unwrap().contains("full name"));
+        assert!(cv.export_problem(Language::English).unwrap().contains("full name"));
 
         cv.name = "Ada Lovelace".into();
-        assert!(cv.export_problem().unwrap().contains("summary or"));
+        assert!(cv.export_problem(Language::English).unwrap().contains("summary or"));
 
         cv.summary = "   ".into();
-        assert!(cv.export_problem().is_some(), "whitespace is not content");
+        assert!(cv.export_problem(Language::English).is_some(), "whitespace is not content");
 
         cv.experience = vec![Experience::default()];
-        assert!(cv.export_problem().is_some(), "blank entries are not content");
+        assert!(cv.export_problem(Language::English).is_some(), "blank entries are not content");
 
         cv.experience[0].bullets = vec!["  ".into()];
-        assert!(cv.export_problem().is_some(), "blank bullets are not content");
+        assert!(cv.export_problem(Language::English).is_some(), "blank bullets are not content");
 
         cv.summary = "Analytical engine programmer.".into();
-        assert!(cv.export_problem().is_none(), "a summary alone is enough");
+        assert!(cv.export_problem(Language::English).is_none(), "a summary alone is enough");
     }
 
     #[test]
@@ -1104,7 +1245,7 @@ mod tests {
             Experience { bullets: vec!["".into(), "  ".into()], ..Default::default() },
         ];
 
-        let text = document_text(&render_document(&cv, Structure::ReverseChronological).unwrap());
+        let text = document_text(&render_document(&cv, Structure::ReverseChronological, Language::English).unwrap());
         assert!(text.contains("Ada Lovelace"), "the name still renders: {text:?}");
         assert!(!text.contains("WORK EXPERIENCE"), "empty section rendered: {text:?}");
         assert!(!text.contains("PROFESSIONAL SUMMARY"), "blank summary rendered: {text:?}");
@@ -1112,7 +1253,7 @@ mod tests {
 
         cv.summary = "Analytical engine programmer.".into();
         cv.experience[1].title = "Engineer".into();
-        let text = document_text(&render_document(&cv, Structure::ReverseChronological).unwrap());
+        let text = document_text(&render_document(&cv, Structure::ReverseChronological, Language::English).unwrap());
         assert!(text.contains("WORK EXPERIENCE"));
         assert!(text.contains("PROFESSIONAL SUMMARY"));
         assert_eq!(text.matches("Engineer").count(), 1, "one row, not one per draft entry");
@@ -1130,14 +1271,14 @@ mod tests {
             ..Default::default()
         }];
         // An empty end date means "no end recorded", not an ongoing role.
-        let text = document_text(&render_document(&cv, Structure::ReverseChronological).unwrap());
+        let text = document_text(&render_document(&cv, Structure::ReverseChronological, Language::English).unwrap());
         assert!(text.contains("2020"), "{text:?}");
         assert!(!text.contains("Present"), "empty end became Present: {text:?}");
         assert!(!text.contains("2020 – "), "trailing separator rendered: {text:?}");
 
         // Only an explicit ongoing role (no end value at all) says Present.
         cv.experience[0].end = None;
-        let text = document_text(&render_document(&cv, Structure::ReverseChronological).unwrap());
+        let text = document_text(&render_document(&cv, Structure::ReverseChronological, Language::English).unwrap());
         assert!(text.contains("Present"), "an ongoing role still says Present: {text:?}");
     }
 
@@ -1167,7 +1308,7 @@ mod tests {
             },
         ];
 
-        let text = document_text(&render_document(&cv, Structure::ReverseChronological).unwrap());
+        let text = document_text(&render_document(&cv, Structure::ReverseChronological, Language::English).unwrap());
         assert!(text.contains("Mar 2021 – Jun 2022"), "month precision lost: {text:?}");
         assert!(text.contains("(2019)"), "year-only start missing: {text:?}");
         assert!(!text.contains("Jan 2019"), "a missing month was materialized: {text:?}");
@@ -1240,27 +1381,27 @@ mod tests {
         cv.experience[0].start = date(2022, Some(1));
         cv.experience[0].end = Some(date(2021, Some(12)));
         assert!(
-            cv.export_problem().unwrap().contains("start date is after the end date"),
+            cv.export_problem(Language::English).unwrap().contains("start date is after the end date"),
             "a later start year must be rejected"
         );
 
         cv.experience[0].start = date(2021, Some(6));
         cv.experience[0].end = Some(date(2021, Some(3)));
-        assert!(cv.export_problem().unwrap().contains("start date is after the end date"));
+        assert!(cv.export_problem(Language::English).unwrap().contains("start date is after the end date"));
 
         // A year-only end cannot prove a month contradiction.
         cv.experience[0].end = Some(date(2021, None));
-        assert!(cv.export_problem().is_none(), "year-only end was treated as a contradiction");
+        assert!(cv.export_problem(Language::English).is_none(), "year-only end was treated as a contradiction");
 
         // The same year with no months is a tie, not a contradiction.
         cv.experience[0].start = date(2021, None);
         cv.experience[0].end = Some(date(2021, None));
-        assert!(cv.export_problem().is_none());
+        assert!(cv.export_problem(Language::English).is_none());
 
         // Ongoing roles never contradict themselves.
         cv.experience[0].start = date(2024, Some(2));
         cv.experience[0].end = None;
-        assert!(cv.export_problem().is_none());
+        assert!(cv.export_problem(Language::English).is_none());
     }
 
     #[test]
@@ -1268,25 +1409,25 @@ mod tests {
         let mut cv = fixture(1, 6);
 
         cv.email = "ada@".into();
-        assert!(cv.export_problem().unwrap().contains("email address is not valid"));
+        assert!(cv.export_problem(Language::English).unwrap().contains("email address is not valid"));
         cv.email = "ada lovelace@example.invalid".into();
-        assert!(cv.export_problem().unwrap().contains("email address is not valid"));
+        assert!(cv.export_problem(Language::English).unwrap().contains("email address is not valid"));
         cv.email = "ada@example".into();
-        assert!(cv.export_problem().unwrap().contains("email address is not valid"));
+        assert!(cv.export_problem(Language::English).unwrap().contains("email address is not valid"));
         cv.email = "ada@example.invalid".into();
-        assert!(cv.export_problem().is_none(), "a structurally valid email was rejected");
+        assert!(cv.export_problem(Language::English).is_none(), "a structurally valid email was rejected");
 
         // Clearing an optional email is allowed: the draft stays incomplete.
         cv.email = "   ".into();
-        assert!(cv.export_problem().is_none(), "empty email must not block export");
+        assert!(cv.export_problem(Language::English).is_none(), "empty email must not block export");
         cv.email = "ada@example.invalid".into();
 
         cv.links = vec![Link { label: "Portfolio".into(), url: "example.invalid".into() }];
-        assert!(cv.export_problem().unwrap().contains("must start with http:// or https://"));
+        assert!(cv.export_problem(Language::English).unwrap().contains("must start with http:// or https://"));
         cv.links[0].url = "https://example.invalid/a b".into();
-        assert!(cv.export_problem().unwrap().contains("must start with http:// or https://"));
+        assert!(cv.export_problem(Language::English).unwrap().contains("must start with http:// or https://"));
         cv.links[0].url = "https://example.invalid/portfolio".into();
-        assert!(cv.export_problem().is_none(), "a valid link was rejected");
+        assert!(cv.export_problem(Language::English).is_none(), "a valid link was rejected");
     }
 
     #[test]
@@ -1314,9 +1455,9 @@ mod tests {
             issuer: "Test board".into(),
             date: date(2023, None),
         }];
-        cv.languages = vec![Language { name: "Indonesian".into(), level: "Native".into() }];
+        cv.languages = vec![LanguageEntry { name: "Indonesian".into(), level: "Native".into() }];
 
-        let text = document_text(&render_document(&cv, Structure::ReverseChronological).unwrap());
+        let text = document_text(&render_document(&cv, Structure::ReverseChronological, Language::English).unwrap());
         for expected in [
             "PROFESSIONAL SUMMARY",
             "WORK EXPERIENCE",
@@ -1366,15 +1507,15 @@ mod tests {
         cv.skills = vec![SkillGroup::default()];
         cv.projects = vec![ProjectEntry::default()];
         cv.certifications = vec![Certification::default()];
-        cv.languages = vec![Language::default(), Language { level: "  ".into(), ..Default::default() }];
+        cv.languages = vec![LanguageEntry::default(), LanguageEntry { level: "  ".into(), ..Default::default() }];
 
-        let text = document_text(&render_document(&cv, Structure::ReverseChronological).unwrap());
+        let text = document_text(&render_document(&cv, Structure::ReverseChronological, Language::English).unwrap());
         for heading in ["EDUCATION", "SKILLS", "PROJECTS", "CERTIFICATIONS", "LANGUAGES"] {
             assert!(!text.contains(heading), "blank {heading} section rendered: {text:?}");
         }
 
         cv.skills[0].name = "Test automation".into();
-        let text = document_text(&render_document(&cv, Structure::ReverseChronological).unwrap());
+        let text = document_text(&render_document(&cv, Structure::ReverseChronological, Language::English).unwrap());
         assert!(text.contains("SKILLS") && text.contains("Test automation"));
         assert!(!text.contains("EDUCATION"), "still-blank sections stayed blank");
     }
@@ -1394,7 +1535,7 @@ mod tests {
         project.cv.skills = vec![SkillGroup { name: "Test automation".into(), bullets: vec!["Checks.".into()] }];
         project.cv.projects = vec![ProjectEntry { name: "Synthetic project".into(), detail: String::new(), bullets: vec![] }];
         project.cv.certifications = vec![Certification { name: "Certified tester".into(), issuer: String::new(), date: date(2023, None) }];
-        project.cv.languages = vec![Language { name: "Indonesian".into(), level: "Native".into() }];
+        project.cv.languages = vec![LanguageEntry { name: "Indonesian".into(), level: "Native".into() }];
         project.cv.links = vec![Link { label: "Portfolio".into(), url: "https://example.invalid/portfolio".into() }];
 
         write_project(&dir, &project).unwrap();
@@ -1417,22 +1558,22 @@ mod tests {
         // Hand-edited or imported data: a month outside 1-12.
         cv.experience[0].start = CvDate { year: Some(2020), month: Some(13) };
         assert!(
-            cv.export_problem().unwrap().contains("between 1 and 12"),
+            cv.export_problem(Language::English).unwrap().contains("between 1 and 12"),
             "an out-of-range month must block export"
         );
         assert!(
-            render_document(&cv, Structure::ReverseChronological).is_err(),
+            render_document(&cv, Structure::ReverseChronological, Language::English).is_err(),
             "an out-of-range month must not reach the template"
         );
 
         // A month without a year cannot be rendered meaningfully either.
         cv.experience[0].start = CvDate { year: None, month: Some(5) };
-        assert!(cv.export_problem().unwrap().contains("between 1 and 12"));
-        assert!(render_document(&cv, Structure::ReverseChronological).is_err());
+        assert!(cv.export_problem(Language::English).unwrap().contains("between 1 and 12"));
+        assert!(render_document(&cv, Structure::ReverseChronological, Language::English).is_err());
 
         cv.experience[0].start = date(2020, Some(12));
-        assert!(cv.export_problem().is_none(), "a valid date must still export");
-        assert!(render_document(&cv, Structure::ReverseChronological).is_ok());
+        assert!(cv.export_problem(Language::English).is_none(), "a valid date must still export");
+        assert!(render_document(&cv, Structure::ReverseChronological, Language::English).is_ok());
     }
 
     #[test]
@@ -1461,9 +1602,9 @@ mod tests {
             issuer: "Test board".into(),
             date: date(2023, None),
         }];
-        cv.languages = vec![Language { name: "Indonesian".into(), level: "Native".into() }];
+        cv.languages = vec![LanguageEntry { name: "Indonesian".into(), level: "Native".into() }];
 
-        let document = render_document(&cv, Structure::ReverseChronological).unwrap();
+        let document = render_document(&cv, Structure::ReverseChronological, Language::English).unwrap();
         assert!(document.pages().len() > 1, "expected multipage output, got {}", document.pages().len());
 
         let text = document_text(&document);
@@ -1488,7 +1629,7 @@ mod tests {
         // External pdftotext/pdfinfo evidence for the acceptance notes.
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.scratch/evidence/ticket03");
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("experienced-multipage.pdf"), render(&cv, Structure::ReverseChronological).unwrap()).unwrap();
+        fs::write(dir.join("experienced-multipage.pdf"), render(&cv, Structure::ReverseChronological, Language::English).unwrap()).unwrap();
     }
 
     #[test]
@@ -1512,9 +1653,9 @@ mod tests {
             }],
             ..Cv::default()
         };
-        assert!(cv.export_problem().is_none(), "education and projects are substantive content");
+        assert!(cv.export_problem(Language::English).is_none(), "education and projects are substantive content");
 
-        let document = render_document(&cv, Structure::ReverseChronological).unwrap();
+        let document = render_document(&cv, Structure::ReverseChronological, Language::English).unwrap();
         assert_eq!(document.pages().len(), 1);
         let text = document_text(&document);
         assert!(!text.contains("WORK EXPERIENCE"), "fresh graduate invented work history: {text:?}");
@@ -1524,29 +1665,29 @@ mod tests {
 
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.scratch/evidence/ticket03");
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("fresh-graduate.pdf"), render(&cv, Structure::ReverseChronological).unwrap()).unwrap();
+        fs::write(dir.join("fresh-graduate.pdf"), render(&cv, Structure::ReverseChronological, Language::English).unwrap()).unwrap();
     }
 
     #[test]
     fn export_warnings_name_missing_optional_content() {
         let mut cv = fixture(1, 6);
-        assert!(cv.export_warnings(Structure::ReverseChronological).is_empty(), "a complete CV warns about nothing");
+        assert!(cv.export_warnings(Language::English, Structure::ReverseChronological).is_empty(), "a complete CV warns about nothing");
 
         cv.email = String::new();
         cv.phone = String::new();
         assert!(
-            cv.export_warnings(Structure::ReverseChronological)
+            cv.export_warnings(Language::English, Structure::ReverseChronological)
                 .iter()
                 .any(|w| w.contains("no way to contact you")),
             "a CV without contact details must warn"
         );
 
         cv.phone = "555-0100".into();
-        assert!(cv.export_warnings(Structure::ReverseChronological).is_empty(), "one contact method is enough");
+        assert!(cv.export_warnings(Language::English, Structure::ReverseChronological).is_empty(), "one contact method is enough");
 
         cv.experience[0].start = CvDate::default();
         assert!(
-            cv.export_warnings(Structure::ReverseChronological)
+            cv.export_warnings(Language::English, Structure::ReverseChronological)
                 .iter()
                 .any(|w| w.contains("no start date")),
             "an included entry without a start date must warn"
@@ -1586,7 +1727,7 @@ mod tests {
 
     #[test]
     fn functional_leads_with_skills_and_compacts_employment() {
-        let text = document_text(&render_document(&structure_fixture(), Structure::Functional).unwrap());
+        let text = document_text(&render_document(&structure_fixture(), Structure::Functional, Language::English).unwrap());
 
         let skills = text.find("SKILLS").unwrap_or_else(|| panic!("SKILLS missing: {text:?}"));
         let work = text
@@ -1615,7 +1756,7 @@ mod tests {
 
     #[test]
     fn combination_leads_with_skills_and_keeps_detailed_employment() {
-        let text = document_text(&render_document(&structure_fixture(), Structure::Combination).unwrap());
+        let text = document_text(&render_document(&structure_fixture(), Structure::Combination, Language::English).unwrap());
 
         let skills = text.find("SKILLS").unwrap_or_else(|| panic!("SKILLS missing: {text:?}"));
         let work = text
@@ -1638,7 +1779,7 @@ mod tests {
     #[test]
     fn reverse_chronological_keeps_detailed_employment_before_supporting_skills() {
         let text =
-            document_text(&render_document(&structure_fixture(), Structure::ReverseChronological).unwrap());
+            document_text(&render_document(&structure_fixture(), Structure::ReverseChronological, Language::English).unwrap());
 
         let work = text
             .find("WORK EXPERIENCE")
@@ -1673,7 +1814,7 @@ mod tests {
 
         // The only role has no title, employer, or start date: compact output
         // has nothing to show, so it must not emit an empty heading or block.
-        let functional = document_text(&render_document(&cv, Structure::Functional).unwrap());
+        let functional = document_text(&render_document(&cv, Structure::Functional, Language::English).unwrap());
         assert!(
             !functional.contains("WORK EXPERIENCE"),
             "functional rendered a blank employment section: {functional:?}"
@@ -1685,7 +1826,7 @@ mod tests {
 
         // Reverse chronological still shows the same entry, because its location
         // and bullets are visible in that structure.
-        let reverse = document_text(&render_document(&cv, Structure::ReverseChronological).unwrap());
+        let reverse = document_text(&render_document(&cv, Structure::ReverseChronological, Language::English).unwrap());
         for expected in ["WORK EXPERIENCE", "Hidden location", "Hidden-only achievement."] {
             assert!(reverse.contains(expected), "reverse lost {expected:?}: {reverse:?}");
         }
@@ -1697,7 +1838,7 @@ mod tests {
             start: date(2023, None),
             ..Default::default()
         });
-        let functional = document_text(&render_document(&cv, Structure::Functional).unwrap());
+        let functional = document_text(&render_document(&cv, Structure::Functional, Language::English).unwrap());
         assert!(functional.contains("WORK EXPERIENCE"));
         assert_eq!(functional.matches("Visible Engineer").count(), 1);
         assert!(!functional.contains("Hidden location"), "functional leaked a hidden location: {functional:?}");
@@ -1706,9 +1847,9 @@ mod tests {
     #[test]
     fn one_cv_renders_a_different_document_per_structure() {
         let cv = structure_fixture();
-        let reverse = render(&cv, Structure::ReverseChronological).unwrap();
-        let functional = render(&cv, Structure::Functional).unwrap();
-        let combination = render(&cv, Structure::Combination).unwrap();
+        let reverse = render(&cv, Structure::ReverseChronological, Language::English).unwrap();
+        let functional = render(&cv, Structure::Functional, Language::English).unwrap();
+        let combination = render(&cv, Structure::Combination, Language::English).unwrap();
 
         assert_ne!(reverse, functional, "structure did not change the document");
         assert_ne!(functional, combination, "structure did not change the document");
@@ -1751,7 +1892,7 @@ mod tests {
 
         for (name, cv) in [("short", structure_fixture()), ("multipage", long)] {
             for (slug, structure) in structures {
-                let document = render_document(&cv, structure).unwrap();
+                let document = render_document(&cv, structure, Language::English).unwrap();
                 if name == "multipage" {
                     assert!(
                         document.pages().len() > 1,
@@ -1759,7 +1900,8 @@ mod tests {
                         document.pages().len()
                     );
                 }
-                fs::write(dir.join(format!("{name}-{slug}.pdf")), render(&cv, structure).unwrap()).unwrap();
+                fs::write(dir.join(format!("{name}-{slug}.pdf")), render(&cv, structure, Language::English).unwrap())
+                    .unwrap();
             }
         }
     }
@@ -1820,20 +1962,20 @@ mod tests {
         cv.skills = vec![SkillGroup { name: "Named but no evidence".into(), bullets: vec!["  ".into()] }];
 
         assert!(
-            !cv.export_warnings(Structure::ReverseChronological)
+            !cv.export_warnings(Language::English, Structure::ReverseChronological)
                 .iter()
                 .any(|w| w.contains("skill group")),
             "reverse chronological does not lead with skills, so it must not warn"
         );
 
         for structure in [Structure::Functional, Structure::Combination] {
-            let warnings = cv.export_warnings(structure);
+            let warnings = cv.export_warnings(Language::English, structure);
             assert!(
                 warnings.iter().any(|w| w.contains("skill-group achievements")),
                 "{structure:?} must warn about missing evidence: {warnings:?}"
             );
             assert!(
-                cv.export_problem().is_none(),
+                cv.export_problem(Language::English).is_none(),
                 "missing skill evidence must stay a warning, not block export"
             );
         }
@@ -1841,9 +1983,332 @@ mod tests {
         cv.skills[0].bullets = vec!["Evidence now exists.".into()];
         for structure in [Structure::Functional, Structure::Combination] {
             assert!(
-                !cv.export_warnings(structure).iter().any(|w| w.contains("skill-group achievements")),
+                !cv.export_warnings(Language::English, structure).iter().any(|w| w.contains("skill-group achievements")),
                 "{structure:?} must stop warning once evidence exists"
             );
         }
+    }
+
+    // --- ticket 05: independent duplicates, content and interface languages ---
+
+    /// One complete CV whose authored text stays English so both content
+    /// languages render the same source data and only the generated text differs.
+    fn language_fixture() -> Cv {
+        Cv {
+            name: "Synthetic Candidate".into(),
+            email: "candidate@example.invalid".into(),
+            summary: "Authored English summary stays as written.".into(),
+            experience: vec![Experience {
+                title: "Synthetic Engineer".into(),
+                company: "Example Employer".into(),
+                location: "Testville".into(),
+                start: date(2020, Some(5)),
+                end: None, // ongoing role: Present / Sekarang
+                bullets: vec!["Authored achievement bullet.".into()],
+            }],
+            education: vec![Education {
+                school: "Test University".into(),
+                degree: "BSc Testing".into(),
+                location: "Testville".into(),
+                start: date(2016, Some(8)),
+                end: Some(date(2019, Some(5))),
+                bullets: vec!["Authored education bullet.".into()],
+            }],
+            skills: vec![SkillGroup {
+                name: "Test automation".into(),
+                bullets: vec!["Authored skill bullet.".into()],
+            }],
+            projects: vec![ProjectEntry {
+                name: "Synthetic project".into(),
+                detail: "Local tooling".into(),
+                bullets: vec![],
+            }],
+            certifications: vec![Certification {
+                name: "Certified tester".into(),
+                issuer: "Test board".into(),
+                date: date(2023, None),
+            }],
+            languages: vec![LanguageEntry { name: "Indonesian".into(), level: "Native".into() }],
+            ..Cv::default()
+        }
+    }
+
+    #[test]
+    fn content_language_selects_headings_and_present_wording_only() {
+        let cv = language_fixture();
+        let english =
+            document_text(&render_document(&cv, Structure::ReverseChronological, Language::English).unwrap());
+        let indonesian =
+            document_text(&render_document(&cv, Structure::ReverseChronological, Language::Indonesian).unwrap());
+
+        for expected in [
+            "PROFESSIONAL SUMMARY",
+            "WORK EXPERIENCE",
+            "EDUCATION",
+            "SKILLS",
+            "PROJECTS",
+            "CERTIFICATIONS",
+            "LANGUAGES",
+            "May 2020 – Present",
+        ] {
+            assert!(english.contains(expected), "English render missing {expected:?}: {english:?}");
+        }
+        for expected in [
+            "RINGKASAN PROFESIONAL",
+            "PENGALAMAN KERJA",
+            "PENDIDIKAN",
+            "KEAHLIAN",
+            "PROYEK",
+            "SERTIFIKASI",
+            "BAHASA",
+            "Mei 2020 – Sekarang",
+        ] {
+            assert!(indonesian.contains(expected), "Indonesian render missing {expected:?}: {indonesian:?}");
+        }
+        for leaked in ["WORK EXPERIENCE", "PROFESSIONAL SUMMARY", "Present"] {
+            assert!(
+                !indonesian.contains(leaked),
+                "Indonesian render kept English generated text {leaked:?}: {indonesian:?}"
+            );
+        }
+
+        // Authored content is copied into both documents, never translated.
+        for authored in [
+            "Synthetic Candidate",
+            "Authored English summary stays as written.",
+            "Synthetic Engineer",
+            "Example Employer",
+            "Testville",
+            "Authored achievement bullet.",
+            "BSc Testing",
+            "Test automation",
+            "Authored skill bullet.",
+            "Synthetic project",
+            "Certified tester",
+            "Indonesian — Native",
+        ] {
+            assert!(english.contains(authored), "English render lost authored text {authored:?}");
+            assert!(
+                indonesian.contains(authored),
+                "Indonesian render translated or lost authored text {authored:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_structure_renders_in_both_content_languages() {
+        let cv = language_fixture();
+        for language in [Language::English, Language::Indonesian] {
+            let (work, skills, summary) = match language {
+                Language::English => ("WORK EXPERIENCE", "SKILLS", "PROFESSIONAL SUMMARY"),
+                Language::Indonesian => ("PENGALAMAN KERJA", "KEAHLIAN", "RINGKASAN PROFESIONAL"),
+            };
+            for structure in [Structure::ReverseChronological, Structure::Functional, Structure::Combination] {
+                let text = document_text(&render_document(&cv, structure, language).unwrap());
+                assert!(text.contains(summary), "{structure:?}/{language:?} lost the summary heading: {text:?}");
+                assert!(
+                    text.contains("Authored skill bullet."),
+                    "{structure:?}/{language:?} lost authored skill evidence: {text:?}"
+                );
+
+                let work_at = text.find(work).unwrap_or_else(|| panic!("{work} missing in {structure:?}/{language:?}"));
+                let skills_at = text.find(skills).unwrap_or_else(|| panic!("{skills} missing in {structure:?}/{language:?}"));
+                if matches!(structure, Structure::Functional | Structure::Combination) {
+                    assert!(skills_at < work_at, "{structure:?}/{language:?} must lead with skills: {text:?}");
+                } else {
+                    assert!(work_at < skills_at, "{structure:?}/{language:?} must lead with employment: {text:?}");
+                }
+
+                if matches!(structure, Structure::Functional) {
+                    assert!(
+                        !text.contains("Authored achievement bullet."),
+                        "functional/{language:?} must stay compact: {text:?}"
+                    );
+                } else {
+                    assert!(
+                        text.contains("Authored achievement bullet."),
+                        "{structure:?}/{language:?} lost the employment bullet: {text:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn duplicate_is_an_independent_copy_of_content_structure_and_language() {
+        let dir = temp_dir("duplicate");
+        let mut source = project();
+        source.title = "Synthetic CV".into();
+        source.cv = language_fixture();
+        source.structure = Structure::Combination;
+        source.content_language = Language::Indonesian;
+        write_project(&dir, &source).unwrap();
+
+        let copy = duplicate_in(&dir, &source.id).unwrap();
+        assert_ne!(copy.id, source.id, "a duplicate needs its own identity");
+        assert!(
+            copy.id.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
+            "ids stay lowercase hex as documented: {}",
+            copy.id
+        );
+        assert_eq!(copy.title, source.title);
+        assert_eq!(copy.cv, source.cv, "duplicate lost authored content");
+        assert_eq!(copy.structure, Structure::Combination, "duplicate lost the selected structure");
+        assert_eq!(
+            copy.content_language,
+            Language::Indonesian,
+            "duplicate lost the selected content language"
+        );
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 2, "duplicate must add exactly one file");
+
+        // Editing the copy leaves the source file untouched...
+        let mut edited_copy = read_project(&dir, &copy.id).unwrap();
+        edited_copy.cv.summary = "Synthetic copy edited alone.".into();
+        edited_copy.content_language = Language::English;
+        edited_copy.structure = Structure::Functional;
+        write_project(&dir, &edited_copy).unwrap();
+        let reopened_source = read_project(&dir, &source.id).unwrap();
+        assert_eq!(reopened_source.cv.summary, "Authored English summary stays as written.");
+        assert_eq!(reopened_source.content_language, Language::Indonesian);
+        assert_eq!(reopened_source.structure, Structure::Combination);
+
+        // ...and editing the source leaves the copy untouched.
+        let mut edited_source = read_project(&dir, &source.id).unwrap();
+        edited_source.cv.summary = "Synthetic source edited alone.".into();
+        write_project(&dir, &edited_source).unwrap();
+        let reopened_copy = read_project(&dir, &copy.id).unwrap();
+        assert_eq!(reopened_copy.cv.summary, "Synthetic copy edited alone.");
+        assert_eq!(reopened_copy.content_language, Language::English);
+        assert_eq!(reopened_copy.structure, Structure::Functional);
+
+        assert!(duplicate_in(&dir, "missing-project").is_err(), "duplicating an absent project must fail");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn switching_content_language_preserves_authored_text_on_disk() {
+        let dir = temp_dir("content-language");
+        let mut project = project();
+        project.cv = language_fixture();
+        write_project(&dir, &project).unwrap();
+        let original = read_project(&dir, &project.id).unwrap().cv;
+
+        for language in [Language::Indonesian, Language::English] {
+            let mut switched = read_project(&dir, &project.id).unwrap();
+            switched.content_language = language;
+            let stored = write_project(&dir, &switched).unwrap();
+
+            assert_eq!(stored.content_language, language);
+            assert_eq!(stored.cv, original, "changing content language rewrote authored text");
+        }
+
+        let json = fs::read_to_string(dir.join(format!("{}.json", project.id))).unwrap();
+        assert!(json.contains("Authored English summary stays as written."), "authored text missing: {json}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn interface_language_localizes_export_messages_without_changing_content() {
+        let mut cv = language_fixture();
+        assert!(cv.export_problem(Language::English).is_none());
+        assert!(cv.export_problem(Language::Indonesian).is_none());
+
+        let untitled = Cv::default();
+        let english = untitled.export_problem(Language::English).unwrap();
+        let indonesian = untitled.export_problem(Language::Indonesian).unwrap();
+        assert!(english.contains("full name"), "English message missing: {english}");
+        assert!(indonesian.contains("nama lengkap"), "Indonesian message missing: {indonesian}");
+        assert_ne!(english, indonesian, "both interface languages returned the same message");
+
+        // Contradictory dates: the section name follows the interface language.
+        cv.experience[0].start = date(2022, Some(1));
+        cv.experience[0].end = Some(date(2021, Some(12)));
+        assert!(cv.export_problem(Language::English).unwrap().contains("Work experience"));
+        assert!(
+            cv.export_problem(Language::Indonesian).unwrap().contains("Pengalaman kerja"),
+            "Indonesian date message must name the Indonesian section"
+        );
+
+        // Warnings are localized too, and never block export.
+        let mut incomplete = language_fixture();
+        incomplete.email = String::new();
+        incomplete.phone = String::new();
+        incomplete.skills = vec![SkillGroup { name: "No evidence".into(), bullets: vec![] }];
+        let english = incomplete.export_warnings(Language::English, Structure::Functional);
+        let indonesian = incomplete.export_warnings(Language::Indonesian, Structure::Functional);
+        assert!(english.iter().any(|w| w.contains("no way to contact you")), "{english:?}");
+        assert!(english.iter().any(|w| w.contains("skill-group achievements")), "{english:?}");
+        assert!(
+            indonesian.iter().any(|w| w.contains("tidak memiliki cara untuk menghubungi")),
+            "{indonesian:?}"
+        );
+        assert!(indonesian.iter().any(|w| w.contains("kelompok keahlian")), "{indonesian:?}");
+        assert!(
+            indonesian.iter().all(|w| !w.contains("no way to contact you")),
+            "Indonesian warnings leaked English text: {indonesian:?}"
+        );
+        assert!(incomplete.export_problem(Language::Indonesian).is_none());
+    }
+
+    #[test]
+    fn preview_validation_messages_follow_the_interface_language() {
+        let mut cv = language_fixture();
+        cv.experience[0].start = CvDate { year: Some(2020), month: Some(13) };
+
+        let english =
+            render_for(&cv, Structure::ReverseChronological, Language::English, Language::English).unwrap_err();
+        let indonesian =
+            render_for(&cv, Structure::ReverseChronological, Language::English, Language::Indonesian).unwrap_err();
+
+        assert!(english.contains("between 1 and 12"), "{english}");
+        assert!(indonesian.contains("bulan harus antara 1 dan 12"), "{indonesian}");
+        assert!(
+            !indonesian.contains("between 1 and 12"),
+            "content language leaked into an interface message: {indonesian}"
+        );
+    }
+
+    #[test]
+    fn contradictory_dates_name_the_entry_in_the_interface_language() {
+        let mut cv = language_fixture();
+        cv.experience[0].title = String::new();
+        cv.experience[0].company = String::new();
+        cv.experience[0].start = date(2022, Some(1));
+        cv.experience[0].end = Some(date(2021, Some(12)));
+
+        let indonesian = cv.export_problem(Language::Indonesian).unwrap();
+        assert!(indonesian.contains("Pengalaman kerja entri"), "{indonesian}");
+        let english = cv.export_problem(Language::English).unwrap();
+        assert!(english.contains("Work experience entry"), "{english}");
+    }
+
+    /// Writes one PDF per structure/content-language pair for external
+    /// pdfinfo/pdftotext inspection.
+    #[test]
+    fn writes_language_evidence_pdfs() {
+        let cv = language_fixture();
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.scratch/evidence/ticket05");
+        fs::create_dir_all(&dir).unwrap();
+
+        let structures = [
+            ("reverse-chronological", Structure::ReverseChronological),
+            ("functional", Structure::Functional),
+            ("combination", Structure::Combination),
+        ];
+        for (slug, structure) in structures {
+            for (language_slug, language) in [("english", Language::English), ("indonesian", Language::Indonesian)] {
+                let bytes = render(&cv, structure, language).unwrap();
+                assert!(bytes.starts_with(b"%PDF"));
+                fs::write(dir.join(format!("{language_slug}-{slug}.pdf")), bytes).unwrap();
+            }
+        }
+
+        // The same authored data rendered in another content language is a
+        // different document, which is why it must never reuse cached bytes.
+        assert_ne!(
+            render(&cv, Structure::ReverseChronological, Language::English).unwrap(),
+            render(&cv, Structure::ReverseChronological, Language::Indonesian).unwrap(),
+            "content language did not change the document"
+        );
     }
 }

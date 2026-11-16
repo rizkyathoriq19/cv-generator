@@ -5,6 +5,10 @@
 #let input = json("cv.json")
 #let cv = input.cv
 #let structure = input.structure
+// Standard headings and the Present wording follow the CV content language.
+// Authored text is copied verbatim: this template never translates content.
+#let indonesian = input.language == "indonesian"
+#let word(en, id) = if indonesian { id } else { en }
 
 // Blank (or whitespace-only) content must not produce headings or rows.
 #let filled(s) = s != none and s != "" and s.trim() != ""
@@ -62,7 +66,12 @@
 )
 
 // A date never gains a month it does not have: year-only prints the year alone.
-#let months = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+// Month abbreviations are generated text, so they follow the content language.
+#let months = if indonesian {
+  ("Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des")
+} else {
+  ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+}
 
 #let fmt_date(d) = {
   if d == none or d.year == none {
@@ -82,7 +91,7 @@
   if start == "" {
     ""
   } else if e.end == none {
-    start + " – Present"
+    start + " – " + word("Present", "Sekarang")
   } else {
     let end = fmt_date(e.end)
     if end == "" { start } else { start + " – " + end }
@@ -145,7 +154,7 @@
 }
 
 #let skills_section() = {
-  section("Skills", {
+  section(word("Skills", "Keahlian"), {
     for s in skill_groups {
       if filled(s.name) {
         block(above: 0.5em, below: 1pt, width: 100%, strong(wrappable(s.name)))
@@ -158,7 +167,7 @@
 }
 
 #let roles_section() = {
-  section("Work Experience", {
+  section(word("Work Experience", "Pengalaman Kerja"), {
     for e in roles_shown {
       block(above: 0.5em, below: 1pt, width: 100%, {
         let head = ()
@@ -188,7 +197,7 @@
 }
 
 #if filled(cv.summary) {
-  section("Professional Summary", wrappable(cv.summary))
+  section(word("Professional Summary", "Ringkasan Profesional"), wrappable(cv.summary))
 }
 
 // Leading skill evidence comes before employment in functional and combination.
@@ -197,7 +206,7 @@
 #if roles_shown.len() > 0 { roles_section() }
 
 #if schools.len() > 0 {
-  section("Education", {
+  section(word("Education", "Pendidikan"), {
     for e in schools {
       block(above: 0.5em, below: 1pt, width: 100%, {
         let head = ()
@@ -218,7 +227,7 @@
 #if not skills_lead and skill_groups.len() > 0 { skills_section() }
 
 #if project_entries.len() > 0 {
-  section("Projects", {
+  section(word("Projects", "Proyek"), {
     for p in project_entries {
       block(above: 0.5em, below: 1pt, width: 100%, {
         if filled(p.name) { strong(wrappable(p.name)) }
@@ -235,7 +244,7 @@
 }
 
 #if certs.len() > 0 {
-  section("Certifications", {
+  section(word("Certifications", "Sertifikasi"), {
     for c in certs {
       block(above: 1pt, below: 3pt, width: 100%, {
         let head = ()
@@ -249,14 +258,14 @@
 }
 
 #if langs.len() > 0 {
-  section("Languages", {
+  section(word("Languages", "Bahasa"), {
     for l in langs {
-      let label = if filled(l.name) and filled(l.level) {
+      let entry_label = if filled(l.name) and filled(l.level) {
         l.name + " — " + l.level
       } else {
         l.name + l.level
       }
-      block(above: 1pt, below: 1pt, width: 100%, wrappable(label))
+      block(above: 1pt, below: 1pt, width: 100%, wrappable(entry_label))
     }
   })
 }

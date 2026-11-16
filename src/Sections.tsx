@@ -1,5 +1,4 @@
 import {
-  MONTHS,
   emptyCertification,
   emptyDate,
   emptyEducation,
@@ -17,6 +16,7 @@ import {
   type ProjectEntry,
   type SkillGroup,
 } from './cv';
+import { MONTHS, useT } from './i18n';
 
 const patched = <T,>(items: T[], index: number, patch: Partial<T>): T[] =>
   items.map((item, i) => (i === index ? { ...item, ...patch } : item));
@@ -37,16 +37,17 @@ function ItemControls({
   onMove: (from: number, to: number) => void;
   onRemove: (index: number) => void;
 }) {
+  const { t } = useT();
   return (
     <span className="controls">
-      <button type="button" aria-label={`Move ${label} up`} disabled={index === 0} onClick={() => onMove(index, index - 1)}>
+      <button type="button" aria-label={`${t.move} ${label} ${t.up}`} disabled={index === 0} onClick={() => onMove(index, index - 1)}>
         ↑
       </button>
-      <button type="button" aria-label={`Move ${label} down`} disabled={index === count - 1} onClick={() => onMove(index, index + 1)}>
+      <button type="button" aria-label={`${t.move} ${label} ${t.down}`} disabled={index === count - 1} onClick={() => onMove(index, index + 1)}>
         ↓
       </button>
-      <button type="button" aria-label={`Remove ${label}`} onClick={() => onRemove(index)}>
-        Remove
+      <button type="button" aria-label={`${t.remove} ${label}`} onClick={() => onRemove(index)}>
+        {t.remove}
       </button>
     </span>
   );
@@ -64,6 +65,7 @@ function DateField({
   onChange: (next: CvDate) => void;
   disabled?: boolean;
 }) {
+  const { lang, t } = useT();
   const setYear = (text: string) => {
     const digits = text.replace(/\D/g, '').slice(0, 4);
     const year = digits === '' ? null : Number(digits);
@@ -73,14 +75,14 @@ function DateField({
   return (
     <div className="row">
       <label>
-        {label} month
+        {label} {t.month}
         <select
           value={value.month ?? ''}
           disabled={disabled || value.year === null}
           onChange={(e) => onChange({ year: value.year, month: e.target.value === '' ? null : Number(e.target.value) })}
         >
-          <option value="">No month</option>
-          {MONTHS.map((month, index) => (
+          <option value="">{t.noMonth}</option>
+          {MONTHS[lang].map((month, index) => (
             <option key={month} value={index + 1}>
               {month}
             </option>
@@ -88,10 +90,10 @@ function DateField({
         </select>
       </label>
       <label>
-        {label} year
+        {label} {t.year}
         <input
           inputMode="numeric"
-          placeholder="e.g. 2020"
+          placeholder={t.yearExample}
           value={value.year ?? ''}
           disabled={disabled}
           onChange={(e) => setYear(e.target.value)}
@@ -112,18 +114,19 @@ function Bullets({
   bullets: string[];
   onChange: (next: string[]) => void;
 }) {
+  const { t } = useT();
   return (
     <div className="bullets">
       <span className="field-label">{label}</span>
       {bullets.map((bullet, index) => (
         <div className="bullet-row" key={index}>
           <input
-            aria-label={`${scope} bullet ${index + 1}`}
+            aria-label={`${scope} ${t.bullet} ${index + 1}`}
             value={bullet}
             onChange={(e) => onChange(bullets.map((text, i) => (i === index ? e.target.value : text)))}
           />
           <ItemControls
-            label={`${scope} bullet ${index + 1}`}
+            label={`${scope} ${t.bullet} ${index + 1}`}
             index={index}
             count={bullets.length}
             onMove={(from, to) => onChange(moved(bullets, from, to))}
@@ -131,8 +134,8 @@ function Bullets({
           />
         </div>
       ))}
-      <button type="button" aria-label={`Add bullet to ${scope}`} onClick={() => onChange([...bullets, ''])}>
-        Add bullet
+      <button type="button" aria-label={`${t.addBulletTo} ${scope}`} onClick={() => onChange([...bullets, ''])}>
+        {t.addBullet}
       </button>
     </div>
   );
@@ -154,32 +157,34 @@ function EntryLegend({ index, count, label, onMove, onRemove }: { index: number;
 }
 
 export function ExperienceSection({ items, onChange }: { items: Experience[]; onChange: (next: Experience[]) => void }) {
+  const { t } = useT();
+  const scope = t.workExperience.toLowerCase();
   return (
     <>
       {items.map((entry, index) => (
         <fieldset className="entry" key={index}>
           <EntryLegend
-            label="Work experience"
+            label={t.workExperience}
             index={index}
             count={items.length}
             onMove={(from, to) => onChange(moved(items, from, to))}
             onRemove={(position) => onChange(without(items, position))}
           />
           <label>
-            Job title
+            {t.jobTitle}
             <input value={entry.title} onChange={(e) => onChange(patched(items, index, { title: e.target.value }))} />
           </label>
           <label>
-            Employer
+            {t.employer}
             <input value={entry.company} onChange={(e) => onChange(patched(items, index, { company: e.target.value }))} />
           </label>
           <label>
-            Location
+            {t.location}
             <input value={entry.location} onChange={(e) => onChange(patched(items, index, { location: e.target.value }))} />
           </label>
-          <DateField label="Start" value={entry.start} onChange={(start) => onChange(patched(items, index, { start }))} />
+          <DateField label={t.start} value={entry.start} onChange={(start) => onChange(patched(items, index, { start }))} />
           <DateField
-            label="End"
+            label={t.end}
             value={entry.end ?? emptyDate()}
             disabled={entry.end === null}
             onChange={(end) => onChange(patched(items, index, { end }))}
@@ -190,50 +195,52 @@ export function ExperienceSection({ items, onChange }: { items: Experience[]; on
               checked={entry.end === null}
               onChange={(e) => onChange(patched(items, index, { end: e.target.checked ? null : emptyDate() }))}
             />
-            Ongoing (Present)
+            {t.ongoing}
           </label>
           <Bullets
-            label="Achievement bullets"
-            scope={`work experience ${index + 1}`}
+            label={t.achievementBullets}
+            scope={`${scope} ${index + 1}`}
             bullets={entry.bullets}
             onChange={(bullets) => onChange(patched(items, index, { bullets }))}
           />
         </fieldset>
       ))}
       <button type="button" className="add" onClick={() => onChange([...items, emptyExperience()])}>
-        Add work experience
+        {t.addWorkExperience}
       </button>
     </>
   );
 }
 
 export function EducationSection({ items, onChange }: { items: Education[]; onChange: (next: Education[]) => void }) {
+  const { t } = useT();
+  const scope = t.education.toLowerCase();
   return (
     <>
       {items.map((entry, index) => (
         <fieldset className="entry" key={index}>
           <EntryLegend
-            label="Education"
+            label={t.education}
             index={index}
             count={items.length}
             onMove={(from, to) => onChange(moved(items, from, to))}
             onRemove={(position) => onChange(without(items, position))}
           />
           <label>
-            Qualification or field of study
+            {t.qualification}
             <input value={entry.degree} onChange={(e) => onChange(patched(items, index, { degree: e.target.value }))} />
           </label>
           <label>
-            School or institution
+            {t.school}
             <input value={entry.school} onChange={(e) => onChange(patched(items, index, { school: e.target.value }))} />
           </label>
           <label>
-            Location
+            {t.location}
             <input value={entry.location} onChange={(e) => onChange(patched(items, index, { location: e.target.value }))} />
           </label>
-          <DateField label="Start" value={entry.start} onChange={(start) => onChange(patched(items, index, { start }))} />
+          <DateField label={t.start} value={entry.start} onChange={(start) => onChange(patched(items, index, { start }))} />
           <DateField
-            label="End"
+            label={t.end}
             value={entry.end ?? emptyDate()}
             disabled={entry.end === null}
             onChange={(end) => onChange(patched(items, index, { end }))}
@@ -244,166 +251,176 @@ export function EducationSection({ items, onChange }: { items: Education[]; onCh
               checked={entry.end === null}
               onChange={(e) => onChange(patched(items, index, { end: e.target.checked ? null : emptyDate() }))}
             />
-            Ongoing (Present)
+            {t.ongoing}
           </label>
           <Bullets
-            label="Achievement bullets"
-            scope={`education ${index + 1}`}
+            label={t.achievementBullets}
+            scope={`${scope} ${index + 1}`}
             bullets={entry.bullets}
             onChange={(bullets) => onChange(patched(items, index, { bullets }))}
           />
         </fieldset>
       ))}
       <button type="button" className="add" onClick={() => onChange([...items, emptyEducation()])}>
-        Add education
+        {t.addEducation}
       </button>
     </>
   );
 }
 
 export function SkillsSection({ items, onChange }: { items: SkillGroup[]; onChange: (next: SkillGroup[]) => void }) {
+  const { t } = useT();
+  const scope = t.skillGroup.toLowerCase();
   return (
     <>
       {items.map((skill, index) => (
         <fieldset className="entry" key={index}>
           <EntryLegend
-            label="Skill group"
+            label={t.skillGroup}
             index={index}
             count={items.length}
             onMove={(from, to) => onChange(moved(items, from, to))}
             onRemove={(position) => onChange(without(items, position))}
           />
           <label>
-            Skill group
+            {t.skillGroup}
             <input value={skill.name} onChange={(e) => onChange(patched(items, index, { name: e.target.value }))} />
           </label>
           <Bullets
-            label="Achievement bullets"
-            scope={`skill group ${index + 1}`}
+            label={t.achievementBullets}
+            scope={`${scope} ${index + 1}`}
             bullets={skill.bullets}
             onChange={(bullets) => onChange(patched(items, index, { bullets }))}
           />
         </fieldset>
       ))}
       <button type="button" className="add" onClick={() => onChange([...items, emptySkill()])}>
-        Add skill group
+        {t.addSkillGroup}
       </button>
     </>
   );
 }
 
 export function ProjectsSection({ items, onChange }: { items: ProjectEntry[]; onChange: (next: ProjectEntry[]) => void }) {
+  const { t } = useT();
+  const scope = t.project.toLowerCase();
   return (
     <>
       {items.map((project, index) => (
         <fieldset className="entry" key={index}>
           <EntryLegend
-            label="Project"
+            label={t.project}
             index={index}
             count={items.length}
             onMove={(from, to) => onChange(moved(items, from, to))}
             onRemove={(position) => onChange(without(items, position))}
           />
           <label>
-            Project name
+            {t.projectName}
             <input value={project.name} onChange={(e) => onChange(patched(items, index, { name: e.target.value }))} />
           </label>
           <label>
-            Context (optional)
+            {t.contextOptional}
             <input value={project.detail} onChange={(e) => onChange(patched(items, index, { detail: e.target.value }))} />
           </label>
           <Bullets
-            label="Achievement bullets"
-            scope={`project ${index + 1}`}
+            label={t.achievementBullets}
+            scope={`${scope} ${index + 1}`}
             bullets={project.bullets}
             onChange={(bullets) => onChange(patched(items, index, { bullets }))}
           />
         </fieldset>
       ))}
       <button type="button" className="add" onClick={() => onChange([...items, emptyProject()])}>
-        Add project
+        {t.addProject}
       </button>
     </>
   );
 }
 
 export function CertificationsSection({ items, onChange }: { items: Certification[]; onChange: (next: Certification[]) => void }) {
+  const { t } = useT();
+  const scope = t.certification.toLowerCase();
   return (
     <>
       {items.map((certification, index) => (
         <fieldset className="entry" key={index}>
           <EntryLegend
-            label="Certification"
+            label={t.certification}
             index={index}
             count={items.length}
             onMove={(from, to) => onChange(moved(items, from, to))}
             onRemove={(position) => onChange(without(items, position))}
           />
           <label>
-            Certification
+            {t.certification}
             <input value={certification.name} onChange={(e) => onChange(patched(items, index, { name: e.target.value }))} />
           </label>
           <label>
-            Issuer (optional)
+            {t.issuerOptional}
             <input value={certification.issuer} onChange={(e) => onChange(patched(items, index, { issuer: e.target.value }))} />
           </label>
-          <DateField label="Date" value={certification.date} onChange={(date) => onChange(patched(items, index, { date }))} />
+          <DateField label={t.date} value={certification.date} onChange={(date) => onChange(patched(items, index, { date }))} />
         </fieldset>
       ))}
       <button type="button" className="add" onClick={() => onChange([...items, emptyCertification()])}>
-        Add certification
+        {t.addCertification}
       </button>
     </>
   );
 }
 
 export function LanguagesSection({ items, onChange }: { items: Language[]; onChange: (next: Language[]) => void }) {
+  const { t } = useT();
+  const scope = t.language.toLowerCase();
   return (
     <>
       {items.map((language, index) => (
         <fieldset className="entry" key={index}>
           <EntryLegend
-            label="Language"
+            label={t.language}
             index={index}
             count={items.length}
             onMove={(from, to) => onChange(moved(items, from, to))}
             onRemove={(position) => onChange(without(items, position))}
           />
           <label>
-            Language
+            {t.language}
             <input value={language.name} onChange={(e) => onChange(patched(items, index, { name: e.target.value }))} />
           </label>
           <label>
-            Level (optional)
+            {t.levelOptional}
             <input value={language.level} onChange={(e) => onChange(patched(items, index, { level: e.target.value }))} />
           </label>
         </fieldset>
       ))}
       <button type="button" className="add" onClick={() => onChange([...items, emptyLanguage()])}>
-        Add language
+        {t.addLanguage}
       </button>
     </>
   );
 }
 
 export function LinksSection({ items, onChange }: { items: Link[]; onChange: (next: Link[]) => void }) {
+  const { t } = useT();
+  const scope = t.link.toLowerCase();
   return (
     <>
       {items.map((link, index) => (
         <fieldset className="entry" key={index}>
           <EntryLegend
-            label="Link"
+            label={t.link}
             index={index}
             count={items.length}
             onMove={(from, to) => onChange(moved(items, from, to))}
             onRemove={(position) => onChange(without(items, position))}
           />
           <label>
-            Link label (optional)
+            {t.linkLabelOptional}
             <input value={link.label} onChange={(e) => onChange(patched(items, index, { label: e.target.value }))} />
           </label>
           <label>
-            Web address
+            {t.webAddress}
             <input
               value={link.url}
               placeholder="https://example.com/portfolio"
@@ -413,7 +430,7 @@ export function LinksSection({ items, onChange }: { items: Link[]; onChange: (ne
         </fieldset>
       ))}
       <button type="button" className="add" onClick={() => onChange([...items, { label: '', url: '' }])}>
-        Add link
+        {t.addLink}
       </button>
     </>
   );

@@ -62,10 +62,10 @@ the `projects` directory itself; users do not choose working-file locations.
 | Field | Meaning |
 | --- | --- |
 | `version` | Required file format version. Only `1` is read; a newer version is refused with an explicit error instead of being partially loaded. |
-| `id` | Generated lowercase hex project identity. It is also the file name, and it is validated (ASCII alphanumerics and `-` only) before it is ever used as a path. |
+| `id` | Generated lowercase hex project identity. It is also the file name, and it is validated (ASCII alphanumerics and `-` only) before it is ever used as a path. Duplicating a project writes a second file under a fresh id, so the two are independent from that point on; a duplicate never shares or synchronizes data with its source. |
 | `title` | Optional project name shown in the library. Empty means the library shows the CV owner's name instead. |
 | `structure` | Selected content structure: `reverse-chronological` (detailed employment first, skills supporting), `functional` (skill-group achievements first, compact employer/title/date employment), or `combination` (skill-group achievements first plus detailed employment). It is a presentation choice over the same `cv` data: switching structures never edits, deletes, or requires re-entering content, including content a structure does not display. |
-| `content_language` | Selected content language for authored content and standard headings: `english` or `indonesian`. Stored from version 1; the editor currently authors English only. |
+| `content_language` | Selected content language for standard headings: `english` or `indonesian`. It controls the PDF section headings, month abbreviations, and the ongoing-role wording (`Present` / `Sekarang`); authored text is copied verbatim and is never translated. It is independent of the interface language, which is stored outside the project file. |
 | `updated_at` | Unix seconds written by the application on every save; the library lists the most recently changed project first. |
 | `cv` | The authored CV data. Every section is optional: incomplete drafts are valid files. |
 

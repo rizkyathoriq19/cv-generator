@@ -44,6 +44,18 @@ header.bar {
   font-size: 12px;
 }
 
+.lang {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.lang select {
+  font-size: 12px;
+}
+
 .save {
   padding: 3px 8px;
   border: 1px solid #c4c4c0;
@@ -116,6 +128,18 @@ main.library {
 .row-button .muted {
   margin: 0;
   white-space: nowrap;
+}
+
+/* The library row is a project button plus its own Duplicate action. */
+.project-row {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.project-row .row-button {
+  flex: 1;
+  min-width: 0;
 }
 
 .group {
