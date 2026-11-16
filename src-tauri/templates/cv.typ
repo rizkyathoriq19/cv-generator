@@ -1,6 +1,10 @@
 // Fixed application template. Everything from cv.json is plain data:
 // user strings are only ever inserted as content values, never parsed as markup.
-#let cv = json("cv.json")
+// The input is one CV plus the selected structure; the structure only changes
+// which sections lead and how much employment detail shows, never the data.
+#let input = json("cv.json")
+#let cv = input.cv
+#let structure = input.structure
 
 // Blank (or whitespace-only) content must not produce headings or rows.
 #let filled(s) = s != none and s != "" and s.trim() != ""
@@ -127,6 +131,54 @@
 #let certs = cv.certifications.filter(c => not cert_blank(c))
 #let langs = cv.languages.filter(l => not language_blank(l))
 
+// Functional and combination lead with authored skill evidence; reverse
+// chronological leads with detailed employment and keeps skills as support.
+#let skills_lead = structure == "functional" or structure == "combination"
+#let compact_roles = structure == "functional"
+
+// Functional hides location and bullets, so an entry carrying only those has
+// no compact row; it must not render an empty block or heading.
+#let roles_shown = if compact_roles {
+  roles.filter(e => filled(e.title) or filled(e.company) or not date_empty(e.start))
+} else {
+  roles
+}
+
+#let skills_section() = {
+  section("Skills", {
+    for s in skill_groups {
+      if filled(s.name) {
+        block(above: 0.5em, below: 1pt, width: 100%, strong(wrappable(s.name)))
+      }
+      for b in s.bullets {
+        if filled(b) { bullet(b) }
+      }
+    }
+  })
+}
+
+#let roles_section() = {
+  section("Work Experience", {
+    for e in roles_shown {
+      block(above: 0.5em, below: 1pt, width: 100%, {
+        let head = ()
+        if filled(e.title) { head.push(strong(wrappable(e.title))) }
+        if filled(e.company) { head.push(wrappable(e.company)) }
+        // Functional employment is a compact employer/title/date list; the
+        // location and achievement bullets stay in the project, unrendered.
+        if not compact_roles and filled(e.location) { head.push(wrappable(e.location)) }
+        head.join([, ])
+        dates_text(date_range(e))
+      })
+      if not compact_roles {
+        for b in e.bullets {
+          if filled(b) { bullet(b) }
+        }
+      }
+    }
+  })
+}
+
 // Header
 #text(size: 19pt, weight: "bold", wrappable(cv.name))
 
@@ -139,23 +191,10 @@
   section("Professional Summary", wrappable(cv.summary))
 }
 
-#if roles.len() > 0 {
-  section("Work Experience", {
-    for e in roles {
-      block(above: 0.5em, below: 1pt, width: 100%, {
-        let head = ()
-        if filled(e.title) { head.push(strong(wrappable(e.title))) }
-        if filled(e.company) { head.push(wrappable(e.company)) }
-        if filled(e.location) { head.push(wrappable(e.location)) }
-        head.join([, ])
-        dates_text(date_range(e))
-      })
-      for b in e.bullets {
-        if filled(b) { bullet(b) }
-      }
-    }
-  })
-}
+// Leading skill evidence comes before employment in functional and combination.
+#if skills_lead and skill_groups.len() > 0 { skills_section() }
+
+#if roles_shown.len() > 0 { roles_section() }
 
 #if schools.len() > 0 {
   section("Education", {
@@ -175,18 +214,8 @@
   })
 }
 
-#if skill_groups.len() > 0 {
-  section("Skills", {
-    for s in skill_groups {
-      if filled(s.name) {
-        block(above: 0.5em, below: 1pt, width: 100%, strong(wrappable(s.name)))
-      }
-      for b in s.bullets {
-        if filled(b) { bullet(b) }
-      }
-    }
-  })
-}
+// Reverse chronological keeps skills after the dated history as support.
+#if not skills_lead and skill_groups.len() > 0 { skills_section() }
 
 #if project_entries.len() > 0 {
   section("Projects", {
