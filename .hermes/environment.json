@@ -1,0 +1,15 @@
+{
+  "name": "Vite + Tauri",
+  "kind": "vite",
+  "bootstrap": ["npm install"],
+  "build": ["npm run build"],
+  "test": ["cargo test --manifest-path src-tauri/Cargo.toml"],
+  "start": "npm run dev -- --host 127.0.0.1",
+  "port": 1420,
+  "readinessPath": "/",
+  "evidence": [
+    "Detected package.json",
+    "vite.config.ts pins port 1420 (strictPort); Vite binds ::1 only, so the readiness host is set explicitly",
+    "Rust engine checks live in src-tauri and are run with cargo test"
+  ]
+}
