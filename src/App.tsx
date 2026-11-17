@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
 import {
   STRUCTURES,
@@ -7,8 +8,10 @@ import {
   type Cv,
   type ExportAck,
   type Lang,
+  type Opened,
   type Project,
   type ProjectSummary,
+  type SaveResult,
   type Structure,
 } from './cv';
 import {
@@ -83,6 +86,9 @@ export default function App() {
   const [error, setError] = useState('');
   const [exported, setExported] = useState<(ExportAck & { matches: boolean }) | null>(null);
   const [backupStatus, setBackupStatus] = useState('');
+  const [recovery, setRecovery] = useState('');
+  // A close that could not save waits here until the user chooses how to go on.
+  const [closePrompt, setClosePrompt] = useState<null | 'app' | 'library'>(null);
   const [lang, setLang] = useState<Lang>(storedLang);
 
   const t = STRINGS[lang];
@@ -103,8 +109,7 @@ export default function App() {
   const latest = useRef(0);
   const edits = useRef(0);
   const persisted = useRef(0); // edit count at the last successful write
-  const saving = useRef<Promise<void> | null>(null);
-  const savedOk = useRef(true);
+  const saving = useRef<Promise<boolean> | null>(null);
   const docRef = useRef<Project | null>(null);
   docRef.current = doc;
 
@@ -126,15 +131,16 @@ export default function App() {
     edits.current = 0;
     persisted.current = 0;
     docRef.current = project;
-    savedOk.current = true;
     setDoc(project);
     setDirty(false);
     setSaveState('idle');
     setSaveError('');
     setError('');
+    setRecovery('');
     setExported(null);
     setBackupStatus('');
     setPreview(null);
+    setClosePrompt(null);
     host.current?.replaceChildren();
   };
 
@@ -176,63 +182,128 @@ export default function App() {
 
   const openProject = async (id: string) => {
     try {
-      showProject(await invoke<Project>('open_project', { id }));
+      const opened = await invoke<Opened>('open_project', { id, interfaceLanguage: lang });
+      showProject(opened.project);
+      // A damaged file is recovered from its previous revision with a notice;
+      // without one, the open reports the damage instead of blanking the CV.
+      setRecovery(opened.recovery?.notice ?? '');
     } catch (e) {
       setError(String(e));
     }
   };
 
-  const backToLibrary = async () => {
-    // Wait out any in-flight write, then keep writing until no edit is unsaved:
-    // a save started before the newest keystroke must not end the session silently.
-    while (docRef.current && savedOk.current && edits.current > persisted.current) await persist();
-    if (edits.current > persisted.current) {
-      setError(t.cannotSave);
-      return;
-    }
+  const leaveEditor = () => {
+    // Clear the editor reference synchronously: a queued autosave must not write
+    // after the user explicitly discarded the edits.
+    docRef.current = null;
     setDoc(null);
     setDirty(false);
     setSaveState('idle');
+    setSaveError('');
+    setError('');
+    setRecovery('');
     setPreview(null);
     setExported(null);
+    setBackupStatus('');
+    setClosePrompt(null);
     host.current?.replaceChildren();
-    await refreshLibrary();
+    void refreshLibrary();
   };
 
   // --- autosave: one second after the last edit -----------------------------
 
-  const persist = useCallback(async () => {
+  const persist = useCallback(async (): Promise<boolean> => {
     // Writes are serialized: a call made during a write waits for it, then writes
     // whatever is current, so edits made mid-write are never reported as saved.
     const run = (async () => {
       if (saving.current) await saving.current;
       const target = docRef.current;
-      if (!target) return;
+      if (!target) return true;
       const stamp = edits.current;
       setSaveState('saving');
       setSaveError('');
       try {
-        const stored = await invoke<Project>('save_project', { project: target });
-        savedOk.current = true;
+        const result = await invoke<SaveResult>('save_project', {
+          project: target,
+          interfaceLanguage: langRef.current,
+        });
+        const stored = result.project;
         persisted.current = stamp;
         setDoc((current) => (current && current.id === stored.id ? { ...current, updated_at: stored.updated_at } : current));
+        // A save that found a damaged file says so; it is never a silent replacement.
+        if (result.notice) setRecovery(result.notice);
         if (edits.current === stamp) {
           setDirty(false);
           setSaveState('saved');
         }
+        return true;
       } catch (e) {
-        savedOk.current = false;
         setSaveError(String(e));
         if (edits.current === stamp) setSaveState('failed');
+        return false;
       }
     })();
     saving.current = run;
     try {
-      await run;
+      return await run;
     } finally {
       if (saving.current === run) saving.current = null;
     }
   }, []);
+
+  /**
+   * Write until nothing is pending. A failed write stops the loop: only an
+   * explicit discard may abandon edits that never reached the library.
+   */
+  const flush = useCallback(async (): Promise<boolean> => {
+    while (docRef.current && edits.current > persisted.current) {
+      if (!(await persist())) return false;
+    }
+    return true;
+  }, [persist]);
+
+  /** Normal close: save immediately, then finish the close the user asked for. */
+  const finishClose = async (target: 'app' | 'library') => {
+    setClosePrompt(null);
+    if (target === 'app') {
+      await getCurrentWindow().destroy();
+      return;
+    }
+    leaveEditor();
+  };
+
+  const requestClose = async (target: 'app' | 'library') => {
+    if (await flush()) {
+      await finishClose(target);
+      return;
+    }
+    setClosePrompt(target);
+  };
+
+  // Closing the window is a normal close: pending edits are written first. If the
+  // write fails, the window stays open and the close choices appear.
+  useEffect(() => {
+    let alive = true;
+    let unlisten: (() => void) | undefined;
+    void getCurrentWindow()
+      .onCloseRequested(async (event) => {
+        if (!docRef.current || edits.current <= persisted.current) return;
+        event.preventDefault();
+        if (await flush()) {
+          await getCurrentWindow().destroy();
+          return;
+        }
+        setClosePrompt('app');
+      })
+      .then((fn) => {
+        if (alive) unlisten = fn;
+        else fn();
+      });
+    return () => {
+      alive = false;
+      unlisten?.();
+    };
+  }, [flush]);
 
   useEffect(() => {
     if (!doc || !dirty) return;
@@ -376,9 +447,19 @@ export default function App() {
               const label = projectLabel(project, t.untitledCv);
               return (
                 <li key={project.id} className="project-row">
-                  <button type="button" className="row-button" onClick={() => void openProject(project.id)}>
-                    <span>{label}</span>
-                    <span className="muted">{new Date(project.updated_at * 1000).toLocaleString(dateLocale)}</span>
+                  <button
+                    type="button"
+                    className="row-button"
+                    title={project.damaged ? t.damagedHint : undefined}
+                    onClick={() => void openProject(project.id)}
+                  >
+                    <span>
+                      {label}
+                      {project.damaged && <span className="tag"> · {t.damaged}</span>}
+                    </span>
+                    {project.updated_at > 0 && (
+                      <span className="muted">{new Date(project.updated_at * 1000).toLocaleString(dateLocale)}</span>
+                    )}
                   </button>
                   <button
                     type="button"
@@ -417,7 +498,7 @@ export default function App() {
             </button>
           )}
           <LanguageChoice label={t.interfaceShort} value={lang} onChange={setLang} />
-          <button type="button" onClick={() => void backToLibrary()}>
+          <button type="button" onClick={() => void requestClose('library')}>
             {t.library}
           </button>
         </div>
@@ -425,6 +506,12 @@ export default function App() {
 
       <main>
         <section className="form" aria-label={t.editorAria}>
+          {recovery && (
+            <p className="notice" role="status">
+              {recovery}
+            </p>
+          )}
+
           <label>
             {t.projectNameOptional}
             <input
@@ -575,13 +662,13 @@ export default function App() {
             </ul>
           )}
 
-          {saveError && (
+          {!closePrompt && saveError && (
             <p className="error" role="alert">
               {t.saveFailedPrefix} {saveError}
             </p>
           )}
 
-          {error && (
+          {!closePrompt && error && (
             <p className="error" role="alert">
               {error}
             </p>
@@ -593,6 +680,51 @@ export default function App() {
           <div ref={host} className="pages" />
         </section>
       </main>
+
+      {closePrompt && (
+        <div
+          className="overlay"
+          role="dialog"
+          aria-labelledby="close-title"
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') setClosePrompt(null);
+          }}
+        >
+          <div className="dialog">
+            <h2 id="close-title">{t.closeTitle}</h2>
+            <p className="muted">{t.closeBody}</p>
+            {saveError && (
+              <p className="error" role="alert">
+                {t.saveFailedPrefix} {saveError}
+              </p>
+            )}
+            {error && (
+              <p className="error" role="alert">
+                {error}
+              </p>
+            )}
+            {backupStatus && (
+              <p className="muted" role="status">
+                {t.backupExported}: {backupStatus}
+              </p>
+            )}
+            <div className="actions">
+              <button type="button" autoFocus onClick={() => void requestClose(closePrompt)}>
+                {t.retrySave}
+              </button>
+              <button type="button" onClick={() => void exportBackup()}>
+                {t.exportBackup}
+              </button>
+              <button type="button" onClick={() => void finishClose(closePrompt)}>
+                {t.discardAndClose}
+              </button>
+              <button type="button" onClick={() => setClosePrompt(null)}>
+                {t.cancel}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 

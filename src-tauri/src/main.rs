@@ -682,6 +682,9 @@ pub struct ProjectSummary {
     title: String,
     name: String,
     updated_at: u64,
+    /// The current file is unreadable. The CV stays listed so opening it can
+    /// recover the previous revision or report why it cannot.
+    damaged: bool,
 }
 
 fn now_secs() -> u64 {
@@ -698,12 +701,53 @@ fn projects_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+/// One running application owns the library, so two windows cannot race two
+/// writers against the same projects. The OS releases this lock on process exit,
+/// so a crash never leaves a stale lock behind.
+#[derive(Debug)]
+struct InstanceLock(#[allow(dead_code)] fs::File);
+
+fn instance_lock(dir: &Path) -> Result<InstanceLock, String> {
+    let file = fs::File::create(dir.join("instance.lock"))
+        .map_err(|e| format!("could not create the instance lock: {e}"))?;
+    file.try_lock().map_err(|_| {
+        "Another CV Generator window is already open. Close it before starting a second one: \
+         only one application instance may edit the library."
+            .to_string()
+    })?;
+    Ok(InstanceLock(file))
+}
+
 /// Ids are generated hex, never user input: no separators, no traversal.
-fn project_path(dir: &Path, id: &str) -> Result<PathBuf, String> {
-    if id.is_empty() || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+fn is_valid_project_id(id: &str) -> bool {
+    !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
+fn project_file(dir: &Path, id: &str, suffix: &str) -> Result<PathBuf, String> {
+    if !is_valid_project_id(id) {
         return Err("invalid project id".into());
     }
-    Ok(dir.join(format!("{id}.json")))
+    Ok(dir.join(format!("{id}{suffix}.json")))
+}
+
+fn project_path(dir: &Path, id: &str) -> Result<PathBuf, String> {
+    project_file(dir, id, "")
+}
+
+/// The one rolling previous valid revision. Its dotted name is not a project id,
+/// so the library listing never mistakes it (or a preserved damaged file) for a CV.
+fn previous_path(dir: &Path, id: &str) -> Result<PathBuf, String> {
+    project_file(dir, id, ".prev")
+}
+
+/// Test-only control over the replacement sequence. The running application
+/// always passes the default; checks choose the failure they need.
+#[derive(Clone, Copy, Default)]
+struct Faults {
+    /// The library refuses the write (read-only folder, full disk).
+    deny_write: bool,
+    /// The replacement stops after the previous revision was rotated in.
+    interrupt_replace: bool,
 }
 
 /// A fresh identity for a new project or a duplicate. Lowercase hex only, as
@@ -719,24 +763,81 @@ fn now_nanos() -> u128 {
 
 static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-fn read_project(dir: &Path, id: &str) -> Result<Project, String> {
-    let path = project_path(dir, id)?;
-    let text = fs::read_to_string(&path).map_err(|e| format!("could not open project: {e}"))?;
-    let project: Project =
-        serde_json::from_str(&text).map_err(|e| format!("project file is unreadable: {e}"))?;
-    if project.version != SCHEMA_VERSION {
-        return Err(format!(
-            "project version {} is not supported (this app reads version {SCHEMA_VERSION})",
-            project.version
-        ));
+#[derive(Debug)]
+enum ReadError {
+    /// Missing or unparseable: recovery from the previous revision applies.
+    Damaged(String),
+    /// Readable but refused by this app: never rewritten or rolled back.
+    Refused(Refusal),
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Refusal {
+    /// A project file this app version does not read.
+    Version(u32),
+    /// A project file belonging to another id.
+    ForeignId,
+}
+
+/// English detail for non-interface callers (duplicate, diagnostics). The
+/// interface formats its own localized message from the refusal.
+impl std::fmt::Display for ReadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Damaged(message) => f.write_str(message),
+            Self::Refused(Refusal::Version(version)) => write!(
+                f,
+                "project version {version} is not supported (this app reads version {SCHEMA_VERSION})"
+            ),
+            Self::Refused(Refusal::ForeignId) => {
+                f.write_str("project file does not belong to the requested project")
+            }
+        }
     }
-    if project.id != id {
-        return Err("project file does not belong to the requested project".into());
+}
+
+fn read_project_file(path: &Path) -> Result<Project, ReadError> {
+    let text = fs::read_to_string(path)
+        .map_err(|e| ReadError::Damaged(format!("could not open project: {e}")))?;
+    let project: Project = serde_json::from_str(&text)
+        .map_err(|e| ReadError::Damaged(format!("project file is unreadable: {e}")))?;
+    if project.version != SCHEMA_VERSION {
+        return Err(ReadError::Refused(Refusal::Version(project.version)));
     }
     Ok(project)
 }
 
-fn write_project(dir: &Path, project: &Project) -> Result<Project, String> {
+fn read_project(dir: &Path, id: &str) -> Result<Project, ReadError> {
+    let path = project_path(dir, id).map_err(ReadError::Damaged)?;
+    let project = read_project_file(&path)?;
+    if project.id != id {
+        return Err(ReadError::Refused(Refusal::ForeignId));
+    }
+    Ok(project)
+}
+
+/// Keep exactly one rolling valid revision: the current file becomes the
+/// previous one just before it is replaced. The new content is already prepared,
+/// so a failure here leaves the current file exactly as it was. A current file
+/// that no longer parses is never rotated, because that would destroy the only
+/// recoverable copy.
+fn rotate_previous(current: &Path, previous: &Path) -> Result<(), String> {
+    if !current.exists() || read_project_file(current).is_err() {
+        return Ok(());
+    }
+    let bytes =
+        fs::read(current).map_err(|e| format!("could not keep the previous revision: {e}"))?;
+    // ponytail: project-save detail stays English OS text (ticket 05 limit); export localizes.
+    save_atomically(previous, &bytes, Language::English)
+}
+
+/// Writes a project, returning the stored project and the preserved damaged copy
+/// when the save found an unreadable current file.
+fn write_project_in(
+    dir: &Path,
+    project: &Project,
+    faults: Faults,
+) -> Result<(Project, Option<PathBuf>), String> {
     if project.version != SCHEMA_VERSION {
         return Err(format!("refusing to write unsupported project version {}", project.version));
     }
@@ -744,17 +845,61 @@ fn write_project(dir: &Path, project: &Project) -> Result<Project, String> {
     stored.updated_at = now_secs();
     let json = serde_json::to_vec_pretty(&stored)
         .map_err(|e| format!("could not encode project: {e}"))?;
-    // Temp write + rename: a failed write leaves the previous file intact.
-    // ponytail: project-save detail stays English OS text (ticket 05 limit); export localizes.
-    save_atomically(&project_path(dir, &stored.id)?, &json, Language::English)?;
-    Ok(stored)
+    if faults.deny_write {
+        return Err("writing the project failed: Permission denied (os error 13)".into());
+    }
+    let current = project_path(dir, &stored.id)?;
+    // Damage found while the editor was open is kept before the save replaces it.
+    // A readable file this app refuses is never overwritten by older content.
+    let preserved = match read_project_file(&current) {
+        Err(ReadError::Damaged(_)) => preserve_corrupt(dir, &stored.id)?,
+        Err(ReadError::Refused(Refusal::Version(version))) => {
+            return Err(format!(
+                "refusing to overwrite project version {version} with version {SCHEMA_VERSION}"
+            ));
+        }
+        Err(ReadError::Refused(Refusal::ForeignId)) => {
+            return Err("refusing to overwrite a project file that belongs to another project".into());
+        }
+        Ok(_) => None,
+    };
+    // Rotate first, replace second: recoverability never depends on the new write.
+    rotate_previous(&current, &previous_path(dir, &stored.id)?)?;
+    if faults.interrupt_replace {
+        return Err("replacing the project was interrupted".into());
+    }
+    save_atomically(&current, &json, Language::English)?;
+    Ok((stored, preserved))
 }
 
-#[tauri::command]
-fn list_projects(app: tauri::AppHandle) -> Result<Vec<ProjectSummary>, String> {
-    let dir = projects_dir(&app)?;
+fn write_project(dir: &Path, project: &Project) -> Result<Project, String> {
+    Ok(write_project_in(dir, project, Faults::default())?.0)
+}
+
+/// Interface notice for a save that kept a damaged file. Never silent: the
+/// editor shows it beside the Saved state.
+fn damage_notice(path: &Path, lang: Language) -> String {
+    lang.pick(
+        format!(
+            "The saved file was damaged while you were editing. Your current edits were saved, \
+             and the damaged file was kept at {}.",
+            path.display()
+        ),
+        format!(
+            "Berkas tersimpan rusak saat Anda mengedit. Editan Anda sudah disimpan, dan berkas \
+             yang rusak disimpan di {}.",
+            path.display()
+        ),
+    )
+}
+
+
+/// The library lists projects, never previous revisions or preserved damaged
+/// files. A damaged current file is read through its previous revision so the
+/// row stays identifiable and recoverable.
+fn summaries_in(dir: &Path) -> Result<Vec<ProjectSummary>, String> {
     let mut out = Vec::new();
-    for entry in fs::read_dir(&dir).map_err(|e| format!("could not read the CV library: {e}"))? {
+    for entry in fs::read_dir(dir).map_err(|e| format!("could not read the CV library: {e}"))? {
         let path = entry.map_err(|e| format!("could not read the CV library: {e}"))?.path();
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
             continue;
@@ -762,18 +907,30 @@ fn list_projects(app: tauri::AppHandle) -> Result<Vec<ProjectSummary>, String> {
         let Some(id) = path.file_stem().and_then(|s| s.to_str()) else {
             continue;
         };
-        // ponytail: unreadable files are skipped here; ticket 07 adds the recovery notice.
-        if let Ok(project) = read_project(&dir, id) {
-            out.push(ProjectSummary {
-                id: project.id,
-                title: project.title,
-                name: project.cv.name,
-                updated_at: project.updated_at,
-            });
+        if !is_valid_project_id(id) {
+            continue;
         }
+        let (title, name, updated_at, damaged) = match read_project(dir, id) {
+            Ok(project) => (project.title, project.cv.name, project.updated_at, false),
+            Err(error) => {
+                // The row stays so it can be opened and reported; its previous
+                // revision supplies the label when that copy is readable.
+                let label = read_project_file(&previous_path(dir, id)?)
+                    .map(|previous| (previous.title, previous.cv.name, previous.updated_at))
+                    .unwrap_or_default();
+                let damaged = matches!(error, ReadError::Damaged(_));
+                (label.0, label.1, label.2, damaged)
+            }
+        };
+        out.push(ProjectSummary { id: id.to_string(), title, name, updated_at, damaged });
     }
     out.sort_by_key(|project| std::cmp::Reverse(project.updated_at));
     Ok(out)
+}
+
+#[tauri::command]
+fn list_projects(app: tauri::AppHandle) -> Result<Vec<ProjectSummary>, String> {
+    summaries_in(&projects_dir(&app)?)
 }
 
 #[tauri::command]
@@ -794,7 +951,7 @@ fn create_project(app: tauri::AppHandle) -> Result<Project, String> {
 /// into a new project id. The two files are unrelated afterwards: each later
 /// save writes only its own id.
 fn duplicate_in(dir: &Path, id: &str) -> Result<Project, String> {
-    let mut copy = read_project(dir, id)?;
+    let mut copy = read_project(dir, id).map_err(|e| e.to_string())?;
     copy.id = new_project_id();
     write_project(dir, &copy)
 }
@@ -804,14 +961,140 @@ fn duplicate_project(app: tauri::AppHandle, id: String) -> Result<Project, Strin
     duplicate_in(&projects_dir(&app)?, &id)
 }
 
-#[tauri::command]
-fn open_project(app: tauri::AppHandle, id: String) -> Result<Project, String> {
-    read_project(&projects_dir(&app)?, &id)
+/// What opening a CV means when the saved file was damaged: the notice the
+/// interface shows and where the unreadable file was kept for inspection.
+#[derive(Debug, Serialize)]
+pub struct Recovery {
+    notice: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    preserved_as: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct OpenedProject {
+    project: Project,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recovery: Option<Recovery>,
+}
+
+/// Keep a copy of the unreadable current file before recovery or a save replaces
+/// it. Copy, not rename: if the replacement write fails, the CV must stay at its
+/// current path so the library still lists it. The name is not a project id, so
+/// the library listing skips it.
+fn preserve_corrupt(dir: &Path, id: &str) -> Result<Option<PathBuf>, String> {
+    let current = project_path(dir, id)?;
+    if !current.exists() {
+        return Ok(None);
+    }
+    let kept = dir.join(format!("{id}.corrupt-{}.json", now_nanos()));
+    fs::copy(&current, &kept)
+        .map_err(|e| format!("could not keep the damaged file: {e}"))?;
+    Ok(Some(kept))
+}
+
+/// The current file did not parse. Recover the one previous revision, keep the
+/// damaged file, and say so. With no valid previous revision nothing is written
+/// or blanked: the damaged file is reported where it lies.
+fn recover_in(dir: &Path, id: &str, lang: Language) -> Result<OpenedProject, String> {
+    let current = project_path(dir, id)?;
+    let previous = previous_path(dir, id)?;
+    let recovered = read_project_file(&previous).ok().filter(|project| project.id == id);
+    let Some(previous_project) = recovered else {
+        return Err(lang.pick(
+            format!(
+                "This CV could not be opened: its saved file is missing or damaged and no valid \
+                 previous revision exists. The damaged file was left unchanged at {}.",
+                current.display()
+            ),
+            format!(
+                "CV ini tidak dapat dibuka: berkas tersimpannya hilang atau rusak dan tidak ada \
+                 revisi sebelumnya yang valid. Berkas yang rusak dibiarkan tidak berubah di {}.",
+                current.display()
+            ),
+        ));
+    };
+    let preserved = preserve_corrupt(dir, id)?;
+    // Restore the previous revision's own bytes: its content and timestamp are
+    // the recovered save, not a new edit. The next start then opens it normally.
+    let bytes = fs::read(&previous).map_err(|e| format!("could not restore the project: {e}"))?;
+    save_atomically(&current, &bytes, Language::English)?;
+    let kept = preserved.as_ref().map(|path| {
+        lang.pick(
+            format!("The damaged file was kept at {}.", path.display()),
+            format!("Berkas yang rusak disimpan di {}.", path.display()),
+        )
+    });
+    let notice = lang.pick(
+        format!(
+            "Your saved file was damaged, so the previous saved revision was recovered. This \
+             application keeps one previous revision, not full history. Review the CV after \
+             opening it. {}",
+            kept.clone().unwrap_or_default()
+        ),
+        format!(
+            "Berkas tersimpan Anda rusak, sehingga revisi tersimpan sebelumnya dipulihkan. \
+             Aplikasi ini hanya menyimpan satu revisi sebelumnya, bukan seluruh riwayat. \
+             Periksa kembali CV setelah dibuka. {}",
+            kept.clone().unwrap_or_default()
+        ),
+    );
+    Ok(OpenedProject {
+        project: previous_project,
+        recovery: Some(Recovery { notice: notice.trim_end().to_string(), preserved_as: preserved.map(|path| path.display().to_string()) }),
+    })
+}
+
+fn open_in(dir: &Path, id: &str, lang: Language) -> Result<OpenedProject, String> {
+    match read_project(dir, id) {
+        Ok(project) => Ok(OpenedProject { project, recovery: None }),
+        // Only a missing or unparseable file is recoverable. A readable project
+        // this app refuses keeps its explicit error and its bytes.
+        Err(ReadError::Damaged(_)) => recover_in(dir, id, lang),
+        Err(ReadError::Refused(Refusal::Version(version))) => Err(lang.pick(
+            format!(
+                "This CV uses project version {version}; this app reads version {SCHEMA_VERSION} \
+                 and will not rewrite it. Update the app to open it."
+            ),
+            format!(
+                "CV ini memakai versi proyek {version}; aplikasi ini membaca versi \
+                 {SCHEMA_VERSION} dan tidak akan menulis ulang. Perbarui aplikasi untuk membukanya."
+            ),
+        )),
+        Err(ReadError::Refused(Refusal::ForeignId)) => Err(lang.pick(
+            "This CV's saved file belongs to another project and was not opened.",
+            "Berkas tersimpan CV ini milik proyek lain dan tidak dibuka.",
+        )),
+    }
 }
 
 #[tauri::command]
-fn save_project(app: tauri::AppHandle, project: Project) -> Result<Project, String> {
-    write_project(&projects_dir(&app)?, &project)
+fn open_project(
+    app: tauri::AppHandle,
+    id: String,
+    interface_language: Language,
+) -> Result<OpenedProject, String> {
+    open_in(&projects_dir(&app)?, &id, interface_language)
+}
+
+#[derive(Serialize)]
+pub struct SaveResult {
+    project: Project,
+    /// Present when the save kept a damaged file it found while writing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    notice: Option<String>,
+}
+
+#[tauri::command]
+fn save_project(
+    app: tauri::AppHandle,
+    project: Project,
+    interface_language: Language,
+) -> Result<SaveResult, String> {
+    let (stored, preserved) = write_project_in(&projects_dir(&app)?, &project, Faults::default())?;
+    Ok(SaveResult {
+        project: stored,
+        notice: preserved.map(|path| damage_notice(&path, interface_language)),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1076,6 +1359,24 @@ fn hex(bytes: &[u8]) -> String {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            let dir = app
+                .path()
+                .app_data_dir()
+                .map_err(|e| format!("no application data directory: {e}"))?;
+            fs::create_dir_all(&dir)
+                .map_err(|e| format!("could not open the CV library: {e}"))?;
+            match instance_lock(&dir) {
+                Ok(lock) => {
+                    app.manage(lock);
+                }
+                Err(message) => {
+                    eprintln!("{message}");
+                    std::process::exit(1);
+                }
+            }
+            Ok(())
+        })
         .manage(RenderCache::default())
         .invoke_handler(tauri::generate_handler![
             render_pdf,
@@ -1291,7 +1592,12 @@ mod tests {
         write_project(&dir, &project).unwrap();
 
         assert_eq!(read_project(&dir, &project.id).unwrap().cv.summary, "Second autosave.");
-        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1, "one file per project");
+        assert_eq!(
+            read_project_file(&previous_path(&dir, &project.id).unwrap()).unwrap().cv.summary,
+            "Analytical engine programmer.",
+            "the replaced revision is kept for recovery"
+        );
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 2, "one current and one previous file");
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1305,11 +1611,17 @@ mod tests {
 
         let future = r#"{"version":99,"id":"future","cv":{"name":"Ada"}}"#;
         fs::write(dir.join("future.json"), future).unwrap();
-        assert!(read_project(&dir, "future").unwrap_err().contains("not supported"));
+        assert!(matches!(
+            read_project(&dir, "future").unwrap_err(),
+            ReadError::Refused(Refusal::Version(99))
+        ));
         assert_eq!(fs::read_to_string(dir.join("future.json")).unwrap(), future, "refused file rewritten");
 
         fs::write(dir.join("other.json"), r#"{"version":1,"id":"someone-else","cv":{}}"#).unwrap();
-        assert!(read_project(&dir, "other").unwrap_err().contains("does not belong"));
+        assert!(matches!(
+            read_project(&dir, "other").unwrap_err(),
+            ReadError::Refused(Refusal::ForeignId)
+        ));
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -2490,7 +2802,13 @@ mod tests {
     }
 
     fn import_bytes(dir: &Path, bytes: &[u8], lang: Language) -> Result<Project, String> {
-        let file = temp_dir("backup-input").join("backup.json");
+        // Unique per call: parallel checks must not overwrite each other's input.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let file = temp_dir(&format!(
+            "backup-input-{}",
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ))
+        .join("backup.json");
         fs::write(&file, bytes).unwrap();
         import_backup_in(dir, &file, lang)
     }
@@ -2710,5 +3028,397 @@ mod tests {
         assert!(error.contains(".json"), "{error}");
         assert!(!wrong.exists());
         let _ = fs::remove_dir_all(dir);
+    }
+
+    // --- ticket 07: one rolling revision, damaged-file recovery, safe close ---
+
+    /// Current project files only: the previous revision and preserved damaged
+    /// files use dotted names, so they are never listed as CVs.
+    fn listed(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| {
+                name.strip_suffix(".json").is_some_and(is_valid_project_id)
+            })
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn each_save_keeps_exactly_one_previous_valid_revision() {
+        let dir = temp_dir("rolling");
+        let mut project = project();
+        let first = project.cv.summary.clone();
+        write_project(&dir, &project).unwrap();
+        assert!(
+            !previous_path(&dir, &project.id).unwrap().exists(),
+            "a first save has nothing to keep"
+        );
+
+        project.cv.summary = "Second saved revision.".into();
+        write_project(&dir, &project).unwrap();
+        let previous = previous_path(&dir, &project.id).unwrap();
+        assert_eq!(read_project_file(&previous).unwrap().cv.summary, first);
+
+        project.cv.summary = "Third saved revision.".into();
+        write_project(&dir, &project).unwrap();
+        assert_eq!(
+            read_project_file(&previous).unwrap().cv.summary,
+            "Second saved revision.",
+            "only the immediately previous revision is kept, not history"
+        );
+        assert_eq!(read_project(&dir, &project.id).unwrap().cv.summary, "Third saved revision.");
+        assert_eq!(listed(&dir), vec![format!("{}.json", project.id)], "one project file");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 2, "one current and one previous file");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_damaged_current_file_recovers_the_previous_revision_and_keeps_the_evidence() {
+        let dir = temp_dir("recovery");
+        let mut project = project();
+        let first = project.cv.summary.clone();
+        write_project(&dir, &project).unwrap();
+        project.cv.summary = "Second saved revision.".into();
+        write_project(&dir, &project).unwrap();
+
+        let damaged = b"{\"version\": 1, \"id\": \"0a1b2c\", \"cv\": {".to_vec();
+        fs::write(project_path(&dir, &project.id).unwrap(), &damaged).unwrap();
+
+        let opened = open_in(&dir, &project.id, Language::English).unwrap();
+        let recovery = opened.recovery.expect("recovery must be reported, never silent");
+        assert_eq!(
+            opened.project.cv.summary, first,
+            "the previous valid revision was not recovered"
+        );
+        assert!(recovery.notice.contains("previous saved revision"), "{}", recovery.notice);
+        assert!(recovery.notice.contains("not full history"), "{}", recovery.notice);
+        let preserved = PathBuf::from(recovery.preserved_as.expect("the damaged path is reported"));
+        assert!(preserved.exists(), "the damaged file was not kept");
+        assert_eq!(fs::read(&preserved).unwrap(), damaged, "the damaged bytes were changed");
+        assert!(
+            recovery.notice.contains(&preserved.display().to_string()),
+            "the notice must name the kept file: {}",
+            recovery.notice
+        );
+
+        // The current file is healthy again: a restart is an ordinary open.
+        assert_eq!(read_project(&dir, &project.id).unwrap().cv.summary, first);
+        assert_eq!(
+            fs::read(project_path(&dir, &project.id).unwrap()).unwrap(),
+            fs::read(previous_path(&dir, &project.id).unwrap()).unwrap(),
+            "the previous revision was not restored verbatim"
+        );
+        assert!(open_in(&dir, &project.id, Language::English).unwrap().recovery.is_none());
+        assert_eq!(listed(&dir), vec![format!("{}.json", project.id)]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_damaged_project_with_no_valid_previous_revision_is_reported_and_left_alone() {
+        let dir = temp_dir("no-recovery");
+        let lonely = project();
+        write_project(&dir, &lonely).unwrap();
+        let current = project_path(&dir, &lonely.id).unwrap();
+        fs::write(&current, b"not json").unwrap();
+        let before = library_snapshot(&dir);
+
+        let english = open_in(&dir, &lonely.id, Language::English).unwrap_err();
+        let indonesian = open_in(&dir, &lonely.id, Language::Indonesian).unwrap_err();
+        assert!(english.contains("no valid previous revision"), "{english}");
+        assert!(indonesian.contains("tidak ada revisi sebelumnya yang valid"), "{indonesian}");
+        assert!(english.contains(&current.display().to_string()), "{english}");
+        assert_eq!(library_snapshot(&dir), before, "a failed open wrote or blanked something");
+
+        // A previous revision that is damaged too: same report, still no write.
+        let mut project = project();
+        write_project(&dir, &project).unwrap();
+        project.cv.summary = "Second saved revision.".into();
+        write_project(&dir, &project).unwrap();
+        fs::write(&current, b"corrupt current").unwrap();
+        fs::write(previous_path(&dir, &project.id).unwrap(), b"corrupt previous").unwrap();
+        let before = library_snapshot(&dir);
+        assert!(open_in(&dir, &project.id, Language::English).is_err());
+        assert_eq!(library_snapshot(&dir), before, "both damaged files were rewritten");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_denied_save_keeps_the_current_and_previous_revisions() {
+        let dir = temp_dir("denied");
+        let mut project = project();
+        write_project(&dir, &project).unwrap();
+        project.cv.summary = "Second saved revision.".into();
+        write_project(&dir, &project).unwrap();
+        let before = library_snapshot(&dir);
+
+        project.cv.summary = "Unsaved edit.".into();
+        let error = write_project_in(&dir, &project, Faults { deny_write: true, ..Faults::default() })
+            .unwrap_err();
+        assert!(!error.is_empty(), "a denied write must report an error");
+        assert_eq!(library_snapshot(&dir), before, "a denied save changed the library");
+        assert_eq!(read_project(&dir, &project.id).unwrap().cv.summary, "Second saved revision.");
+
+        // The same edits are still in memory and retry once writes are allowed.
+        let stored = write_project(&dir, &project).unwrap();
+        assert_eq!(stored.cv.summary, "Unsaved edit.");
+        assert_eq!(
+            read_project_file(&previous_path(&dir, &project.id).unwrap()).unwrap().cv.summary,
+            "Second saved revision.",
+            "the retry keeps what was saved before it"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_interrupted_replacement_leaves_the_last_saved_revision_readable() {
+        let dir = temp_dir("interrupted");
+        let mut project = project();
+        write_project(&dir, &project).unwrap();
+        let kept = fs::read(project_path(&dir, &project.id).unwrap()).unwrap();
+
+        project.cv.summary = "Never replaced the file.".into();
+        let error = write_project_in(&dir, &project, Faults { interrupt_replace: true, ..Faults::default() })
+            .unwrap_err();
+        assert!(!error.is_empty());
+        assert_eq!(
+            fs::read(project_path(&dir, &project.id).unwrap()).unwrap(),
+            kept,
+            "the interrupted replacement changed the current file"
+        );
+        assert_eq!(read_project(&dir, &project.id).unwrap().cv.summary, "Analytical engine programmer.");
+        assert!(
+            open_in(&dir, &project.id, Language::English).unwrap().recovery.is_none(),
+            "the interrupted content was never saved, so there is nothing to recover"
+        );
+
+        write_project(&dir, &project).unwrap();
+        assert_eq!(read_project(&dir, &project.id).unwrap().cv.summary, "Never replaced the file.");
+        assert_eq!(
+            read_project_file(&previous_path(&dir, &project.id).unwrap()).unwrap().cv.summary,
+            "Analytical engine programmer."
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_corrupt_current_file_never_replaces_the_previous_valid_revision() {
+        let dir = temp_dir("corrupt-rotate");
+        let mut project = project();
+        write_project(&dir, &project).unwrap();
+        project.cv.summary = "Second saved revision.".into();
+        write_project(&dir, &project).unwrap();
+        let previous = previous_path(&dir, &project.id).unwrap();
+        let kept = fs::read(&previous).unwrap();
+
+        fs::write(project_path(&dir, &project.id).unwrap(), b"corrupt current").unwrap();
+        project.cv.summary = "Written over a damaged current file.".into();
+        write_project(&dir, &project).unwrap();
+
+        assert_eq!(
+            fs::read(&previous).unwrap(),
+            kept,
+            "a damaged current file replaced the good previous revision"
+        );
+        assert_eq!(read_project_file(&previous).unwrap().cv.summary, "Analytical engine programmer.");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_library_lists_a_damaged_project_so_it_can_be_recovered() {
+        let dir = temp_dir("damaged-list");
+        let mut project = project();
+        project.title = "Synthetic CV".into();
+        write_project(&dir, &project).unwrap();
+        project.cv.summary = "Second saved revision.".into();
+        write_project(&dir, &project).unwrap();
+
+        let healthy = summaries_in(&dir).unwrap();
+        assert_eq!(healthy.len(), 1);
+        assert!(!healthy[0].damaged);
+
+        fs::write(project_path(&dir, &project.id).unwrap(), b"corrupt").unwrap();
+        let damaged = summaries_in(&dir).unwrap();
+        assert_eq!(damaged.len(), 1, "a damaged CV must stay listed so it can be recovered");
+        assert!(damaged[0].damaged);
+        assert_eq!(damaged[0].id, project.id);
+        assert_eq!(damaged[0].title, "Synthetic CV", "the previous revision labels the row");
+        assert_eq!(damaged[0].name, "Ada Lovelace");
+
+        open_in(&dir, &project.id, Language::English).unwrap();
+        let recovered = summaries_in(&dir).unwrap();
+        assert_eq!(recovered.len(), 1, "the previous revision is not a second CV");
+        assert!(!recovered[0].damaged);
+
+        // With no readable revision either, the row still exists so opening can
+        // report the condition instead of the CV silently disappearing.
+        fs::write(project_path(&dir, &project.id).unwrap(), b"corrupt").unwrap();
+        fs::write(previous_path(&dir, &project.id).unwrap(), b"corrupt").unwrap();
+        let unreadable = summaries_in(&dir).unwrap();
+        assert_eq!(unreadable.len(), 1);
+        assert!(unreadable[0].damaged);
+        assert_eq!(unreadable[0].id, project.id);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn recovery_and_unreadable_notices_follow_the_interface_language() {
+        let dir = temp_dir("recovery-messages");
+        let mut project = project();
+        write_project(&dir, &project).unwrap();
+        project.cv.summary = "Second saved revision.".into();
+        write_project(&dir, &project).unwrap();
+        fs::write(project_path(&dir, &project.id).unwrap(), b"corrupt").unwrap();
+
+        let notice = open_in(&dir, &project.id, Language::Indonesian)
+            .unwrap()
+            .recovery
+            .unwrap()
+            .notice;
+        assert!(notice.contains("revisi tersimpan sebelumnya dipulihkan"), "{notice}");
+        assert!(notice.contains("bukan seluruh riwayat"), "{notice}");
+        assert!(!notice.contains("Your saved file"), "{notice}");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn one_running_instance_holds_the_library() {
+        let dir = temp_dir("instance");
+        let first = instance_lock(&dir).unwrap();
+        let second = instance_lock(&dir).unwrap_err();
+        assert!(second.contains("Another CV Generator window"), "{second}");
+        drop(first);
+        assert!(
+            instance_lock(&dir).is_ok(),
+            "the lock must be released when the process holding it exits"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_newer_project_file_is_refused_and_left_alone() {
+        let dir = temp_dir("refused-newer");
+        let mut project = project();
+        project.title = "Synthetic CV".into();
+        write_project(&dir, &project).unwrap();
+        project.cv.summary = "Second saved revision.".into();
+        write_project(&dir, &project).unwrap();
+
+        let current = project_path(&dir, &project.id).unwrap();
+        let newer = br#"{"version":2,"id":"0a1b2c","cv":{"name":"Ada from a newer app"}}"#;
+        fs::write(&current, newer).unwrap();
+        let before = library_snapshot(&dir);
+
+        let english = open_in(&dir, &project.id, Language::English).unwrap_err();
+        let indonesian = open_in(&dir, &project.id, Language::Indonesian).unwrap_err();
+        assert!(english.contains("project version 2"), "{english}");
+        assert!(english.contains("will not rewrite"), "{english}");
+        assert!(indonesian.contains("versi proyek 2"), "{indonesian}");
+        assert_eq!(library_snapshot(&dir), before, "a newer file was quarantined or rewritten");
+
+        // It stays listed and is not reported as damage; opening explains the version.
+        let summaries = summaries_in(&dir).unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].id, project.id);
+        assert!(!summaries[0].damaged, "a refused newer file is not damage");
+        assert_eq!(summaries[0].title, "Synthetic CV", "the previous revision labels the row");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_foreign_project_file_is_refused_without_rewriting() {
+        let dir = temp_dir("refused-foreign");
+        let foreign = r#"{"version":1,"id":"someone-else","cv":{"name":"Not mine"}}"#;
+        fs::write(dir.join("0a1b2c.json"), foreign).unwrap();
+        let before = library_snapshot(&dir);
+
+        let english = open_in(&dir, "0a1b2c", Language::English).unwrap_err();
+        let indonesian = open_in(&dir, "0a1b2c", Language::Indonesian).unwrap_err();
+        assert!(english.contains("belongs to another project"), "{english}");
+        assert!(indonesian.contains("milik proyek lain"), "{indonesian}");
+        assert_eq!(library_snapshot(&dir), before, "a foreign file was rewritten or quarantined");
+        assert!(!summaries_in(&dir).unwrap()[0].damaged);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn damage_found_during_a_save_is_preserved() {
+        let dir = temp_dir("save-preserves-damage");
+        let mut project = project();
+        write_project(&dir, &project).unwrap();
+        project.cv.summary = "Second saved revision.".into();
+        write_project(&dir, &project).unwrap();
+
+        let damaged = b"corrupt current".to_vec();
+        fs::write(project_path(&dir, &project.id).unwrap(), &damaged).unwrap();
+        project.cv.summary = "Written over a damaged current file.".into();
+        write_project(&dir, &project).unwrap();
+
+        let kept: Vec<PathBuf> = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| path.to_string_lossy().contains(".corrupt-"))
+            .collect();
+        assert_eq!(kept.len(), 1, "the damaged bytes were not kept: {kept:?}");
+        assert_eq!(fs::read(&kept[0]).unwrap(), damaged, "the damaged bytes were changed");
+        assert_eq!(read_project(&dir, &project.id).unwrap().cv.summary, "Written over a damaged current file.");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn preserving_damage_keeps_the_current_file_in_place() {
+        let dir = temp_dir("preserve-copy");
+        let project = project();
+        write_project(&dir, &project).unwrap();
+        let current = project_path(&dir, &project.id).unwrap();
+        let damaged = b"corrupt current".to_vec();
+        fs::write(&current, &damaged).unwrap();
+
+        let kept = preserve_corrupt(&dir, &project.id).unwrap().unwrap();
+        assert!(current.exists(), "the CV must stay at its path so the library still lists it");
+        assert_eq!(fs::read(&current).unwrap(), damaged);
+        assert_eq!(fs::read(&kept).unwrap(), damaged, "the kept copy must match the damaged bytes");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_save_reports_the_damage_it_preserved() {
+        let dir = temp_dir("save-damage-notice");
+        let mut project = project();
+        write_project(&dir, &project).unwrap();
+        project.cv.summary = "Second saved revision.".into();
+        write_project(&dir, &project).unwrap();
+        fs::write(project_path(&dir, &project.id).unwrap(), b"corrupt current").unwrap();
+        project.cv.summary = "Saved over damage.".into();
+
+        let (stored, preserved) = write_project_in(&dir, &project, Faults::default()).unwrap();
+        let kept = preserved.expect("a save that kept a damaged file must report it");
+        assert_eq!(stored.cv.summary, "Saved over damage.");
+        let english = damage_notice(&kept, Language::English);
+        let indonesian = damage_notice(&kept, Language::Indonesian);
+        assert!(english.contains("damaged while you were editing"), "{english}");
+        assert!(english.contains(&kept.display().to_string()), "{english}");
+        assert!(indonesian.contains("rusak saat Anda mengedit"), "{indonesian}");
+        assert!(!indonesian.contains("damaged while"), "{indonesian}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_save_never_overwrites_a_refused_project_file() {
+        let dir = temp_dir("save-refused");
+        let project = project();
+        let current = project_path(&dir, &project.id).unwrap();
+        let newer = br#"{"version":2,"id":"0a1b2c","cv":{"name":"Ada from a newer app"}}"#;
+        fs::write(&current, newer).unwrap();
+        let before = library_snapshot(&dir);
+
+        let error = write_project(&dir, &project).unwrap_err();
+        assert!(error.contains("refusing to overwrite project version 2"), "{error}");
+        assert_eq!(library_snapshot(&dir), before, "a save rewrote a refused file");
+        let _ = fs::remove_dir_all(&dir);
     }
 }

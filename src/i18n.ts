@@ -50,7 +50,6 @@ const EN = {
   editorTagline: 'Autosaves one second after you stop editing.',
   retrySave: 'Retry save',
   library: 'Library',
-  cannotSave: 'Changes could not be saved. Retry the save before leaving this CV.',
   projectNameOptional: 'Project name (optional)',
   untitledCv: 'Untitled CV',
   contentStructure: 'Content structure',
@@ -148,6 +147,13 @@ const EN = {
   backupNote:
     'A project backup is an editable snapshot, not a PDF. It is unencrypted: anyone who can open the file can read it, so store it where you trust.',
   backupExported: 'Backup saved',
+  damaged: 'Damaged',
+  damagedHint: 'Damaged — open it to recover the previous revision.',
+  closeTitle: 'Unsaved changes could not be saved',
+  closeBody:
+    'Your edits are still open in this window and were not written to the CV library. Retry the save, export a project backup, discard the changes and close, or cancel.',
+  discardAndClose: 'Discard and close',
+  cancel: 'Cancel',
 } as const;
 
 export type Strings = { [K in keyof typeof EN]: string };
@@ -161,7 +167,6 @@ const ID: Strings = {
   editorTagline: 'Menyimpan otomatis satu detik setelah Anda berhenti mengedit.',
   retrySave: 'Ulangi simpan',
   library: 'Pustaka',
-  cannotSave: 'Perubahan tidak dapat disimpan. Ulangi penyimpanan sebelum meninggalkan CV ini.',
   projectNameOptional: 'Nama proyek (opsional)',
   untitledCv: 'CV Tanpa Judul',
   contentStructure: 'Struktur konten',
@@ -259,6 +264,13 @@ const ID: Strings = {
   backupNote:
     'Cadangan proyek adalah salinan yang dapat diedit, bukan PDF. Berkas ini tidak dienkripsi: siapa pun yang dapat membukanya dapat membacanya, jadi simpan di tempat yang Anda percaya.',
   backupExported: 'Cadangan tersimpan',
+  damaged: 'Rusak',
+  damagedHint: 'Rusak — buka untuk memulihkan revisi sebelumnya.',
+  closeTitle: 'Perubahan belum tersimpan tidak dapat disimpan',
+  closeBody:
+    'Editan Anda masih terbuka di jendela ini dan belum ditulis ke pustaka CV. Ulangi penyimpanan, ekspor cadangan proyek, buang perubahan lalu tutup, atau batalkan.',
+  discardAndClose: 'Buang dan tutup',
+  cancel: 'Batal',
 };
 
 export const STRINGS: Record<Lang, Strings> = { english: EN, indonesian: ID };

@@ -317,6 +317,51 @@ button:disabled {
   font-size: 12px;
 }
 
+/* Recovery notice: the saved file was damaged and a previous revision was used. */
+.notice {
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border: 1px solid #c9a227;
+  border-radius: 4px;
+  background: #fdf6e3;
+  font-size: 12px;
+}
+
+.tag {
+  color: #8d1f1f;
+  font-weight: 600;
+}
+
+/* Close choices: a failed save may only be abandoned by explicit discard. */
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgb(28 28 28 / 45%);
+}
+
+.dialog {
+  width: min(520px, 100%);
+  padding: 18px 20px;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: 0 8px 28px rgb(0 0 0 / 30%);
+}
+
+.dialog h2 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+
+.dialog .actions {
+  flex-wrap: wrap;
+  margin: 14px 0 0;
+}
+
 .preview {
   overflow: auto;
   padding: 20px;
