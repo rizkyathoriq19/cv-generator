@@ -1454,19 +1454,40 @@ struct CachedRender {
     /// frontend cannot hand over newer content, another structure, or another
     /// content language beside older artifacts.
     structure: Structure,
-    language: Language,
+    content_language: Language,
     cv: Cv,
     bytes: Vec<u8>,
 }
 
 impl CachedRender {
-    fn matches(&self, revision: u64, structure: Structure, language: Language, cv: &Cv) -> bool {
-        self.revision == revision && self.structure == structure && self.language == language && &self.cv == cv
+    /// Export proves the bytes belong to this content, structure, and content
+    /// language. The client's render counter is not evidence of freshness; the
+    /// input is.
+    fn matches(&self, structure: Structure, content_language: Language, cv: &Cv) -> bool {
+        self.structure == structure && self.content_language == content_language && &self.cv == cv
     }
 }
 
 #[derive(Default)]
 struct RenderCache(Mutex<Option<CachedRender>>);
+
+/// A render started later always wins. An older result is refused rather than
+/// overwriting bytes for newer content, however late it arrives.
+fn cache_render(
+    cache: &RenderCache,
+    revision: u64,
+    structure: Structure,
+    content_language: Language,
+    cv: Cv,
+    bytes: Vec<u8>,
+) -> Result<(), String> {
+    let mut cached = cache.0.lock().unwrap();
+    if cached.as_ref().is_some_and(|c| c.revision > revision) {
+        return Err("stale render discarded".into());
+    }
+    *cached = Some(CachedRender { revision, structure, content_language, cv, bytes });
+    Ok(())
+}
 
 #[derive(Debug, Serialize)]
 pub struct ExportAck {
@@ -1486,24 +1507,30 @@ fn render_pdf(
     cache: tauri::State<RenderCache>,
 ) -> Result<tauri::ipc::Response, String> {
     let pdf = render_for(&cv, structure, content_language, interface_language)?;
-    let mut cached = cache.0.lock().unwrap();
-    // Concurrent invokes can finish out of order; keep the newest revision only.
-    if cached.as_ref().is_some_and(|c| c.revision > revision) {
-        return Err("stale render discarded".into());
-    }
-    *cached = Some(CachedRender { revision, structure, language: content_language, cv, bytes: pdf.clone() });
+    cache_render(&cache, revision, structure, content_language, cv, pdf.clone())?;
     Ok(tauri::ipc::Response::new(pdf))
 }
 
 #[tauri::command]
 fn export_pdf(
-    revision: u64,
     path: String,
     cv: Cv,
     structure: Structure,
     content_language: Language,
     interface_language: Language,
     cache: tauri::State<RenderCache>,
+) -> Result<ExportAck, String> {
+    export_cached(&cache, path, cv, structure, content_language, interface_language)
+}
+
+/// Exports the cached artifact only for the exact content it was rendered from.
+fn export_cached(
+    cache: &RenderCache,
+    path: String,
+    cv: Cv,
+    structure: Structure,
+    content_language: Language,
+    interface_language: Language,
 ) -> Result<ExportAck, String> {
     // Rust owns export validation: drafts may be incomplete, exports may not.
     // The reader is the person using the interface, so its language is used here.
@@ -1522,7 +1549,7 @@ fn export_pdf(
             )
         })?;
     // Rust, not the frontend, proves these bytes belong to the validated CV, structure, and language.
-    if !cached.matches(revision, structure, content_language, &cv) {
+    if !cached.matches(structure, content_language, &cv) {
         return Err(interface_language.pick(
             "preview is out of date; render it again before exporting",
             "pratinjau sudah tidak sesuai; render ulang sebelum mengekspor",
@@ -1686,6 +1713,14 @@ mod tests {
     }
 
     fn document_text(document: &PagedDocument) -> String {
+        page_texts(document).join("\n")
+    }
+
+    fn page_texts(document: &PagedDocument) -> Vec<String> {
+        document.pages().iter().map(|page| frame_text(&page.frame)).collect()
+    }
+
+    fn frame_text(frame: &typst::layout::Frame) -> String {
         fn walk(frame: &typst::layout::Frame, out: &mut String) {
             for (_, item) in frame.items() {
                 match item {
@@ -1696,10 +1731,7 @@ mod tests {
             }
         }
         let mut out = String::new();
-        for page in document.pages() {
-            walk(&page.frame, &mut out);
-            out.push('\n');
-        }
+        walk(frame, &mut out);
         out
     }
 
@@ -1744,6 +1776,101 @@ mod tests {
         assert_eq!(fs::read(&target).unwrap(), pdf, "exported bytes differ from rendered bytes");
         assert_eq!(hex(&pdf), hex(&fs::read(&target).unwrap()));
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failed_render_keeps_the_previous_preview_and_blocks_exporting_newer_content() {
+        let dir = temp_dir("render-failure");
+        let cache = RenderCache::default();
+        let older = fixture(1, 6);
+        let older_pdf = render(&older, Structure::ReverseChronological, Language::English).unwrap();
+        cache_render(&cache, 1, Structure::ReverseChronological, Language::English, older.clone(), older_pdf.clone()).unwrap();
+
+        // A month without a year cannot be rendered, so the render fails and the
+        // previous preview — the only artifact the reader can still see — survives.
+        let mut unrenderable = fixture(1, 6);
+        unrenderable.experience[0].start = CvDate { year: None, month: Some(5) };
+        let error = render_for(&unrenderable, Structure::ReverseChronological, Language::English, Language::English).unwrap_err();
+        assert!(!error.is_empty(), "a rendering failure must report a message");
+        let kept = cache.0.lock().unwrap().clone().unwrap();
+        assert_eq!(kept.revision, 1, "a failed render must not replace the previous preview");
+        assert_eq!(kept.bytes, older_pdf, "the visible preview bytes must survive the failure");
+
+        // Exporting content that never rendered is refused and writes nothing, so
+        // the older preview cannot be exported as the current CV.
+        let target = dir.join("cv.pdf");
+        let mut edited = older;
+        edited.summary = "Edited while rendering kept failing.".into();
+        let refusal = export_cached(
+            &cache,
+            target.to_string_lossy().into_owned(),
+            edited,
+            Structure::ReverseChronological,
+            Language::English,
+            Language::English,
+        )
+        .unwrap_err();
+        assert!(refusal.contains("out of date"), "{refusal}");
+        assert!(!target.exists(), "a refused export must not create the destination");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failed_pdf_export_keeps_the_destination_and_writes_nothing_partial() {
+        let dir = temp_dir("pdf-destination");
+        let cv = fixture(1, 10);
+        let pdf = render(&cv, Structure::ReverseChronological, Language::English).unwrap();
+        let cache = RenderCache::default();
+        cache_render(&cache, 1, Structure::ReverseChronological, Language::English, cv.clone(), pdf.clone()).unwrap();
+
+        // A destination that cannot be replaced (a non-empty directory): the old
+        // content survives and no temp file is left behind.
+        let blocked = dir.join("existing.pdf");
+        fs::create_dir(&blocked).unwrap();
+        fs::write(blocked.join("keep"), b"original").unwrap();
+        let refused = export_cached(
+            &cache,
+            blocked.to_string_lossy().into_owned(),
+            cv.clone(),
+            Structure::ReverseChronological,
+            Language::English,
+            Language::English,
+        )
+        .unwrap_err();
+        assert!(!refused.is_empty(), "a failed write must report an error");
+        assert_eq!(fs::read(blocked.join("keep")).unwrap(), b"original");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1, "a temp file was left behind");
+
+        // A current preview exports its exact bytes over an existing file.
+        let target = dir.join("cv.pdf");
+        fs::write(&target, b"older pdf that must be replaced whole").unwrap();
+        let ack = export_cached(
+            &cache,
+            target.to_string_lossy().into_owned(),
+            cv.clone(),
+            Structure::ReverseChronological,
+            Language::English,
+            Language::English,
+        )
+        .unwrap();
+        assert_eq!(fs::read(&target).unwrap(), pdf);
+        assert_eq!(ack.sha256, hex(&pdf));
+
+        // Content that was never rendered is refused and leaves the file alone.
+        let mut edited = cv;
+        edited.summary = "Edited after the preview was rendered.".into();
+        let stale = export_cached(
+            &cache,
+            target.to_string_lossy().into_owned(),
+            edited,
+            Structure::ReverseChronological,
+            Language::English,
+            Language::English,
+        )
+        .unwrap_err();
+        assert!(stale.contains("out of date"), "{stale}");
+        assert_eq!(fs::read(&target).unwrap(), pdf);
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1855,36 +1982,73 @@ mod tests {
 
     #[test]
     fn cached_bytes_only_match_the_content_structure_and_language_they_were_rendered_from() {
-        let cached = CachedRender {
-            revision: 4,
-            structure: Structure::Functional,
-            language: Language::English,
-            cv: fixture(1, 6),
-            bytes: b"%PDF".to_vec(),
-        };
+        let cache = RenderCache::default();
+        cache_render(
+            &cache,
+            4,
+            Structure::Functional,
+            Language::English,
+            fixture(1, 6),
+            b"%PDF".to_vec(),
+        )
+        .unwrap();
+        let cached = cache.0.lock().unwrap().clone().unwrap();
         assert!(
-            cached.matches(4, Structure::Functional, Language::English, &fixture(1, 6)),
-            "same revision, structure, language and content must match"
+            cached.matches(Structure::Functional, Language::English, &fixture(1, 6)),
+            "same structure, language and content must match"
+        );
+
+        // A re-render of identical content at a newer revision still matches: the
+        // client's render counter is not the export identity.
+        cache_render(
+            &cache,
+            9,
+            Structure::Functional,
+            Language::English,
+            fixture(1, 6),
+            b"%PDF".to_vec(),
+        )
+        .unwrap();
+        let newer = cache.0.lock().unwrap().clone().unwrap();
+        assert!(
+            newer.matches(Structure::Functional, Language::English, &fixture(1, 6)),
+            "a re-render of the same content must still export"
         );
 
         let mut edited = fixture(1, 6);
         edited.summary = "Edited after the preview was rendered.".into();
         assert!(
-            !cached.matches(4, Structure::Functional, Language::English, &edited),
+            !newer.matches(Structure::Functional, Language::English, &edited),
             "newer content must not be exported with older bytes"
         );
         assert!(
-            !cached.matches(5, Structure::Functional, Language::English, &fixture(1, 6)),
-            "a different revision must not match"
-        );
-        assert!(
-            !cached.matches(4, Structure::Combination, Language::English, &fixture(1, 6)),
+            !newer.matches(Structure::Combination, Language::English, &fixture(1, 6)),
             "a structure change must not reuse the old preview bytes"
         );
         assert!(
-            !cached.matches(4, Structure::Functional, Language::Indonesian, &fixture(1, 6)),
+            !newer.matches(Structure::Functional, Language::Indonesian, &fixture(1, 6)),
             "a content language change must not reuse the old preview bytes"
         );
+    }
+
+    #[test]
+    fn a_late_render_result_cannot_replace_a_newer_preview() {
+        let cache = RenderCache::default();
+        let newer = fixture(1, 6);
+        let older = {
+            let mut cv = fixture(1, 6);
+            cv.summary = "Older content rendered first.".into();
+            cv
+        };
+        cache_render(&cache, 2, Structure::Functional, Language::English, newer.clone(), b"newer bytes".to_vec()).unwrap();
+        let refused = cache_render(&cache, 1, Structure::Functional, Language::English, older, b"older bytes".to_vec());
+        assert!(refused.is_err(), "an older revision must not overwrite newer bytes");
+
+        // The newer bytes and their content are intact, so export still matches them.
+        let kept = cache.0.lock().unwrap().clone().unwrap();
+        assert_eq!(kept.revision, 2);
+        assert_eq!(kept.bytes, b"newer bytes");
+        assert!(kept.matches(Structure::Functional, Language::English, &newer));
     }
 
     #[test]
@@ -2303,6 +2467,149 @@ mod tests {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.scratch/evidence/ticket03");
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("experienced-multipage.pdf"), render(&cv, Structure::ReverseChronological, Language::English).unwrap()).unwrap();
+    }
+
+    /// Long content in every section, so each structure has real page breaks and
+    /// headings that land near them.
+    fn long_fixture() -> Cv {
+        let mut cv = fixture(0, 0);
+        cv.summary = format!("Long content marker summary. {}", "A detailed summary sentence. ".repeat(14));
+        cv.experience = (0..8)
+            .map(|i| Experience {
+                title: format!("Long content role {i}"),
+                company: "Analytical Engines Ltd".into(),
+                location: "London".into(),
+                start: date(2012 + i as u16, Some(1)),
+                end: Some(date(2013 + i as u16, Some(12))),
+                bullets: (0..5)
+                    .map(|b| format!("Long content marker {i}-{b} {}", "achieved something measurable ".repeat(6)))
+                    .collect(),
+            })
+            .collect();
+        cv.skills = (0..4)
+            .map(|s| SkillGroup {
+                name: format!("Skill group {s}"),
+                bullets: (0..3)
+                    .map(|b| format!("Long content marker skill {s}-{b} {}", "evidence of the capability ".repeat(5)))
+                    .collect(),
+            })
+            .collect();
+        cv.education = vec![Education {
+            school: "Test University".into(),
+            degree: "BSc Testing".into(),
+            location: "Testville".into(),
+            start: date(2008, Some(9)),
+            end: Some(date(2011, Some(6))),
+            bullets: vec!["Long content marker education 0".into()],
+        }];
+        cv.projects = vec![ProjectEntry {
+            name: "Synthetic project".into(),
+            detail: "Local tooling".into(),
+            bullets: vec!["Long content marker project 0".into()],
+        }];
+        cv.certifications = vec![Certification {
+            name: "Certified tester".into(),
+            issuer: "Test board".into(),
+            date: date(2023, None),
+        }];
+        cv.languages = vec![LanguageEntry { name: "Indonesian".into(), level: "Native".into() }];
+        cv
+    }
+
+    #[test]
+    fn long_content_keeps_a4_pages_readable_order_and_headings_with_their_content() {
+        let cv = long_fixture();
+        let headings = [
+            "PROFESSIONAL SUMMARY",
+            "WORK EXPERIENCE",
+            "SKILLS",
+            "EDUCATION",
+            "PROJECTS",
+            "CERTIFICATIONS",
+            "LANGUAGES",
+        ];
+        for structure in [
+            Structure::ReverseChronological,
+            Structure::Functional,
+            Structure::Combination,
+        ] {
+            let document = render_document(&cv, structure, Language::English).unwrap();
+            assert!(
+                document.pages().len() > 1,
+                "{structure:?} must span pages for long content, got {}",
+                document.pages().len()
+            );
+
+            for (n, page) in document.pages().iter().enumerate() {
+                let size = page.frame.size();
+                assert!(
+                    (size.x.to_pt() - 595.276).abs() < 0.1 && (size.y.to_pt() - 841.89).abs() < 0.1,
+                    "{structure:?} page {} is not A4: {size:?}",
+                    n + 1
+                );
+            }
+
+            let text = document_text(&document);
+            // Functional shows a compact employer/title/date row: its bullets stay
+            // in the project by design, but no role or other section may be lost.
+            let mut expected = headings.to_vec();
+            expected.extend([
+                "Long content marker skill 3-2",
+                "Long content marker education 0",
+                "Long content marker project 0",
+            ]);
+            if structure == Structure::Functional {
+                expected.push("Long content role 7");
+            } else {
+                expected.push("Long content marker 7-4");
+            }
+            for expected in expected {
+                assert!(
+                    text.contains(expected),
+                    "{structure:?} lost {expected:?}; long content must not be clipped, shrunk, or dropped"
+                );
+            }
+
+            // Reading order follows the structure: skills lead in functional and
+            // combination, employment leads in reverse chronological.
+            let at = |needle: &str| text.find(needle).unwrap_or_else(|| panic!("{structure:?} lost {needle}"));
+            if structure == Structure::ReverseChronological {
+                assert!(at("WORK EXPERIENCE") < at("SKILLS"), "{structure:?} must keep skills as support");
+            } else {
+                assert!(at("SKILLS") < at("WORK EXPERIENCE"), "{structure:?} must lead with skills");
+            }
+
+            // A sticky heading never ends a page alone.
+            for (n, page) in page_texts(&document).iter().enumerate() {
+                for heading in headings {
+                    assert!(
+                        !page.trim_end().ends_with(heading),
+                        "{structure:?} page {} ends with the heading {heading:?}",
+                        n + 1
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn writes_ticket09_structure_evidence_pdfs() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.scratch/evidence/ticket09");
+        fs::create_dir_all(&dir).unwrap();
+        let cv = long_fixture();
+        for (structure, name) in [
+            (Structure::ReverseChronological, "long-reverse-chronological.pdf"),
+            (Structure::Functional, "long-functional.pdf"),
+            (Structure::Combination, "long-combination.pdf"),
+        ] {
+            let pdf = render(&cv, structure, Language::English).unwrap();
+            assert!(pdf.starts_with(b"%PDF"), "{name} is not a PDF");
+            assert!(
+                render_document(&cv, structure, Language::English).unwrap().pages().len() > 1,
+                "{name} does not span pages"
+            );
+            fs::write(dir.join(name), pdf).unwrap();
+        }
     }
 
     #[test]

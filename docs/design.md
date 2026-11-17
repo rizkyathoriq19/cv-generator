@@ -101,7 +101,7 @@ Status: Design confirmed by the user (design only). Local specification and draf
 - Embed Typst through Rust for PDF typesetting and bundle PDF.js for viewing the resulting PDF bytes.
 - Bundle fixed application templates and a redistributable font family. Verify the chosen font's redistribution license and preserve required third-party license notices before inclusion.
 - Treat CV input as plain data, never executable Typst source. Restrict the compiler to application-controlled templates, fonts, and input data, without arbitrary filesystem access or downloadable packages.
-- Preview and export use the same generated artifact for the current revision. Reuse the current PDF bytes; regenerate only when they do not represent current content. Never export an older revision as current.
+- Preview and export use the same generated artifact for the current revision. Reuse the current PDF bytes; regenerate only when they do not represent current content. Never export an older revision as current. The artifact's identity is the render input (CV data, selected structure, content language); the render counter only orders concurrent renders and labels the preview.
 - Bundle PDF.js and its matching worker and required assets locally; do not rely on a platform's built-in PDF viewer or a CDN.
 - Engine selection is accepted architecture, not evidence of rendering correctness, performance, or WebView compatibility.
 
