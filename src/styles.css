@@ -120,16 +120,21 @@ main.library {
   list-style: none;
 }
 
-.row-button {
+.row-button,
+.row-label {
   display: flex;
   justify-content: space-between;
   gap: 16px;
-  width: 100%;
   padding: 10px 12px;
+}
+
+.row-button {
+  width: 100%;
   text-align: left;
 }
 
-.row-button .muted {
+.row-button .muted,
+.row-label .muted {
   margin: 0;
   white-space: nowrap;
 }
@@ -144,6 +149,17 @@ main.library {
 .project-row .row-button {
   flex: 1;
   min-width: 0;
+}
+
+/* A trashed row is a label, not an open button: Restore / Delete act on it. */
+.row-label {
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  border: 1px solid #dcdcd8;
+  border-radius: 4px;
+  background: #fff;
+  font-size: 13px;
 }
 
 .group {
@@ -240,6 +256,11 @@ button.add {
   display: flex;
   gap: 8px;
   margin-bottom: 14px;
+}
+
+/* The library toolbar and Trash rows carry an extra action; narrow windows wrap. */
+.library .actions {
+  flex-wrap: wrap;
 }
 
 label {

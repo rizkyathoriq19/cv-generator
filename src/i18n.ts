@@ -149,6 +149,16 @@ const EN = {
   backupExported: 'Backup saved',
   damaged: 'Damaged',
   damagedHint: 'Damaged — open it to recover the previous revision.',
+  trash: 'Trash',
+  moveToTrash: 'Move to Trash',
+  restore: 'Restore',
+  deletePermanently: 'Delete permanently',
+  trashEmpty: 'Trash is empty. Deleting a CV moves it here until you restore it or delete it permanently.',
+  trashNote:
+    'CVs in Trash and their recovery data are unencrypted plain files. Permanent deletion removes them from this device but is not secure erasure. Exported PDFs and project backups outside the library are not touched.',
+  deleteTitle: 'Delete this CV permanently?',
+  deleteBody:
+    'This removes the CV and its internal recovery copy — the saved file, the previous revision, and any kept damaged files — from this device. It cannot be undone, and permanent deletion is not secure erasure. Exported PDFs and project backups outside the library are not touched.',
   closeTitle: 'Unsaved changes could not be saved',
   closeBody:
     'Your edits are still open in this window and were not written to the CV library. Retry the save, export a project backup, discard the changes and close, or cancel.',
@@ -266,6 +276,17 @@ const ID: Strings = {
   backupExported: 'Cadangan tersimpan',
   damaged: 'Rusak',
   damagedHint: 'Rusak — buka untuk memulihkan revisi sebelumnya.',
+  trash: 'Sampah',
+  moveToTrash: 'Pindahkan ke Sampah',
+  restore: 'Pulihkan',
+  deletePermanently: 'Hapus permanen',
+  trashEmpty:
+    'Sampah kosong. CV yang dihapus dipindahkan ke sini sampai Anda memulihkan atau menghapusnya secara permanen.',
+  trashNote:
+    'CV di Sampah dan data pemulihannya adalah berkas biasa yang tidak dienkripsi. Penghapusan permanen membuangnya dari perangkat ini, tetapi bukan penghapusan aman. PDF dan cadangan proyek di luar pustaka tidak disentuh.',
+  deleteTitle: 'Hapus CV ini secara permanen?',
+  deleteBody:
+    'Tindakan ini membuang CV beserta salinan pemulihan internalnya — berkas tersimpan, revisi sebelumnya, dan berkas rusak yang disimpan — dari perangkat ini. Tindakan ini tidak dapat dibatalkan, dan penghapusan permanen bukan penghapusan aman. PDF dan cadangan proyek di luar pustaka tidak disentuh.',
   closeTitle: 'Perubahan belum tersimpan tidak dapat disimpan',
   closeBody:
     'Editan Anda masih terbuka di jendela ini dan belum ditulis ke pustaka CV. Ulangi penyimpanan, ekspor cadangan proyek, buang perubahan lalu tutup, atau batalkan.',

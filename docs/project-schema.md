@@ -10,8 +10,9 @@ One CV project is one JSON file in the application-managed local library:
 (for example `~/.local/share/app.cvgen.desktop` on Linux). The application creates
 the `projects` directory itself; users do not choose working-file locations.
 
-The library folder also holds two non-project files per CV, which are never listed
-as CVs because their names are not project ids:
+The library folder also holds the `trash/` folder (see below) and two non-project
+files per CV, which are never listed as CVs because their names are not project
+ids:
 
 | File | Meaning |
 | --- | --- |
@@ -152,6 +153,36 @@ survive save/reopen.
   skill group has an achievement bullet. The last warning never blocks export.
 - Files are unencrypted plain JSON. No application password, encryption, or
   secure-erasure guarantee exists; the OS account protects local files.
+
+## Trash
+
+Deleting a CV moves it into `projects/trash/`, a folder inside the library that the
+library listing never reads as active CVs. The move carries every internal file
+that belongs to that CV:
+
+| File | Meaning |
+| --- | --- |
+| `<id>.json` | The CV as it was when deleted (possibly the damaged current file). |
+| `<id>.prev.json` | Its one rolling previous revision, unchanged. |
+| `<id>.corrupt-<nanoseconds>.json` | Any damaged copy kept during an earlier recovery. |
+
+- Moving is a rename on the same filesystem; if a file cannot be moved, the files
+  that already moved are moved back, so a CV is never split between the library and
+  Trash.
+- Nothing in Trash is erased or rewritten, and no automatic cleanup runs: a CV stays
+  restorable until it is permanently deleted.
+- Restore moves the same files back. It refuses — changing nothing — when the
+  library already holds any file for that id, so it can never overwrite or merge
+  another CV. A restored damaged CV opens through the normal recovery path.
+- Permanent deletion is only offered for a CV in Trash and requires an explicit
+  confirmation in the interface. It removes that CV's saved file, previous revision,
+  and kept damaged copies, and nothing else: other CVs and exported PDFs or project
+  backups outside the library are untouched.
+- Permanent deletion leaves an empty `<id>.deleted.json` marker, so a save that was
+  already scheduled when the CV was deleted cannot recreate the project. The
+  application refuses a save for a CV that is in Trash or permanently deleted.
+- Trash and recovery files are unencrypted plain JSON protected only by OS account
+  permissions. Permanent deletion is not secure erasure, and the interface says so.
 
 ## Project backup (version 1)
 

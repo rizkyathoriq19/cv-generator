@@ -1077,12 +1077,35 @@ fn open_project(
     open_in(&projects_dir(&app)?, &id, interface_language)
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct SaveResult {
     project: Project,
     /// Present when the save kept a damaged file it found while writing.
     #[serde(skip_serializing_if = "Option::is_none")]
     notice: Option<String>,
+}
+
+/// The editor's save path adds the Trash guards: a CV waiting in Trash, or one
+/// already permanently deleted, must not be recreated by a write that was
+/// already in flight when the user deleted it.
+fn save_in(dir: &Path, project: &Project, lang: Language) -> Result<SaveResult, String> {
+    if deleted_marker(dir, &project.id)?.exists() {
+        return Err(lang.pick(
+            "This CV was permanently deleted and was not saved again.",
+            "CV ini sudah dihapus permanen dan tidak disimpan lagi.",
+        ));
+    }
+    if trash_path(dir, &project.id)?.exists() {
+        return Err(lang.pick(
+            "This CV is in Trash and was not saved. Restore it before editing.",
+            "CV ini ada di Sampah dan tidak disimpan. Pulihkan dulu sebelum mengedit.",
+        ));
+    }
+    let (stored, preserved) = write_project_in(dir, project, Faults::default())?;
+    Ok(SaveResult {
+        project: stored,
+        notice: preserved.map(|path| damage_notice(&path, lang)),
+    })
 }
 
 #[tauri::command]
@@ -1091,11 +1114,201 @@ fn save_project(
     project: Project,
     interface_language: Language,
 ) -> Result<SaveResult, String> {
-    let (stored, preserved) = write_project_in(&projects_dir(&app)?, &project, Faults::default())?;
-    Ok(SaveResult {
-        project: stored,
-        notice: preserved.map(|path| damage_notice(&path, interface_language)),
-    })
+    save_in(&projects_dir(&app)?, &project, interface_language)
+}
+
+// ---------------------------------------------------------------------------
+// Trash: reversible local deletion, explicit permanent removal
+// ---------------------------------------------------------------------------
+
+/// Trash lives inside the library folder. Its name is not a project id, and the
+/// library listing only reads `*.json` files directly in `dir`, so trashed CVs
+/// are never listed as active ones.
+fn trash_dir(dir: &Path) -> PathBuf {
+    dir.join("trash")
+}
+
+/// The saved file of a CV waiting in Trash.
+fn trash_path(dir: &Path, id: &str) -> Result<PathBuf, String> {
+    project_file(&trash_dir(dir), id, "")
+}
+
+/// Empty marker left after permanent deletion. It keeps a save that was already
+/// in flight from recreating the project.
+fn deleted_marker(dir: &Path, id: &str) -> Result<PathBuf, String> {
+    project_file(&trash_dir(dir), id, ".deleted")
+}
+
+/// Every file that belongs to one CV: the current save, its one rolling previous
+/// revision, and any damaged copies kept during recovery. Matching requires the
+/// dotted suffix, so an id that is a prefix of another id never claims its files.
+fn project_files(dir: &Path, id: &str) -> Result<Vec<PathBuf>, String> {
+    if !is_valid_project_id(id) || !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut files = Vec::new();
+    for entry in fs::read_dir(dir).map_err(|e| format!("could not read the CV library: {e}"))? {
+        let path = entry.map_err(|e| format!("could not read the CV library: {e}"))?.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let Some(rest) = name.strip_prefix(id) else {
+            continue;
+        };
+        let belongs = rest == ".json"
+            || rest == ".prev.json"
+            || (rest.starts_with(".corrupt-") && rest.ends_with(".json"));
+        if belongs {
+            files.push(path);
+        }
+    }
+    Ok(files)
+}
+
+/// Rename each file of one CV between the library and Trash. Renames stay on the
+/// same filesystem; a failure moves back what already moved, so a CV is never
+/// split between the two folders.
+fn move_project_files(from: &Path, to: &Path, id: &str, lang: Language) -> Result<(), String> {
+    let files = project_files(from, id)?;
+    fs::create_dir_all(to).map_err(|e| {
+        lang.pick(
+            format!("could not open Trash: {e}"),
+            format!("tidak dapat membuka Sampah: {e}"),
+        )
+    })?;
+    let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new();
+    for path in files {
+        let target = to.join(path.file_name().unwrap_or_default());
+        if let Err(e) = fs::rename(&path, &target) {
+            for (from, to) in moved.iter().rev() {
+                let _ = fs::rename(to, from);
+            }
+            return Err(lang.pick(
+                format!("could not move the CV files: {e}"),
+                format!("tidak dapat memindahkan berkas CV: {e}"),
+            ));
+        }
+        moved.push((path, target));
+    }
+    Ok(())
+}
+
+/// Delete moves the whole CV — saved file, previous revision, kept damaged
+/// copies — into Trash. Nothing is erased and no automatic cleanup runs.
+fn delete_in(dir: &Path, id: &str, lang: Language) -> Result<(), String> {
+    if !project_path(dir, id)?.exists() {
+        return Err(lang.pick(
+            "This CV is not in the library.",
+            "CV ini tidak ada di pustaka.",
+        ));
+    }
+    move_project_files(dir, &trash_dir(dir), id, lang)?;
+    Ok(())
+}
+
+/// Restore refuses to overwrite anything already stored under the same identity:
+/// a half-restored or duplicate CV is reported, never merged.
+fn restore_in(dir: &Path, id: &str, lang: Language) -> Result<(), String> {
+    let trash = trash_dir(dir);
+    if !trash_path(dir, id)?.exists() {
+        return Err(lang.pick(
+            "This CV is no longer in Trash.",
+            "CV ini tidak lagi ada di Sampah.",
+        ));
+    }
+    if !project_files(dir, id)?.is_empty() {
+        return Err(lang.pick(
+            "A CV with the same saved identity is already in the library, so this one was not restored. Nothing was changed.",
+            "CV dengan identitas tersimpan yang sama sudah ada di pustaka, jadi CV ini tidak dipulihkan. Tidak ada yang diubah.",
+        ));
+    }
+    // Drop a leftover deletion marker first: if that fails nothing moved, and if
+    // the move fails the CV is still in Trash, where saves stay refused anyway.
+    let marker = deleted_marker(dir, id)?;
+    if marker.exists() {
+        fs::remove_file(&marker).map_err(|e| {
+            lang.pick(
+                format!("could not restore the CV: {e}"),
+                format!("tidak dapat memulihkan CV: {e}"),
+            )
+        })?;
+    }
+    move_project_files(&trash, dir, id, lang)
+}
+
+/// Permanent deletion removes the selected CV's files only; exported PDFs and
+/// backups live outside the library and are untouched. The empty `.deleted`
+/// marker keeps an already-scheduled save from recreating the project.
+fn delete_permanently_in(dir: &Path, id: &str, lang: Language) -> Result<(), String> {
+    let trash = trash_dir(dir);
+    let files = project_files(&trash, id)?;
+    if files.is_empty() {
+        return Err(lang.pick(
+            "This CV is no longer in Trash.",
+            "CV ini tidak lagi ada di Sampah.",
+        ));
+    }
+    let marker = deleted_marker(dir, id)?;
+    fs::write(&marker, b"").map_err(|e| {
+        lang.pick(
+            format!("could not finish deleting the CV: {e}"),
+            format!("tidak dapat menyelesaikan penghapusan CV: {e}"),
+        )
+    })?;
+    // Remove the recovery copies first and the listed saved file last: if a
+    // removal fails, the row stays in Trash and permanent deletion can be retried.
+    let current = trash_path(dir, id)?;
+    let remove = |path: &Path| {
+        fs::remove_file(path).map_err(|e| {
+            lang.pick(
+                format!("could not delete the CV: {e}"),
+                format!("tidak dapat menghapus CV: {e}"),
+            )
+        })
+    };
+    for path in files.iter().filter(|path| **path != current) {
+        remove(path)?;
+    }
+    if current.exists() {
+        remove(&current)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn list_trash(app: tauri::AppHandle) -> Result<Vec<ProjectSummary>, String> {
+    let trash = trash_dir(&projects_dir(&app)?);
+    if !trash.exists() {
+        return Ok(Vec::new());
+    }
+    summaries_in(&trash)
+}
+
+#[tauri::command]
+fn delete_project(
+    app: tauri::AppHandle,
+    id: String,
+    interface_language: Language,
+) -> Result<(), String> {
+    delete_in(&projects_dir(&app)?, &id, interface_language)
+}
+
+#[tauri::command]
+fn restore_project(
+    app: tauri::AppHandle,
+    id: String,
+    interface_language: Language,
+) -> Result<(), String> {
+    restore_in(&projects_dir(&app)?, &id, interface_language)
+}
+
+#[tauri::command]
+fn delete_project_permanently(
+    app: tauri::AppHandle,
+    id: String,
+    interface_language: Language,
+) -> Result<(), String> {
+    delete_permanently_in(&projects_dir(&app)?, &id, interface_language)
 }
 
 // ---------------------------------------------------------------------------
@@ -1388,7 +1601,11 @@ pub fn run() {
             open_project,
             save_project,
             export_backup,
-            import_backup
+            import_backup,
+            list_trash,
+            delete_project,
+            restore_project,
+            delete_project_permanently
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -2793,8 +3010,9 @@ mod tests {
     fn library_snapshot(dir: &Path) -> Vec<(String, Vec<u8>)> {
         let mut files: Vec<_> = fs::read_dir(dir)
             .unwrap()
-            .map(|entry| {
-                let path = entry.unwrap().path();
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.is_file())
+            .map(|path| {
                 (path.file_name().unwrap().to_string_lossy().into_owned(), fs::read(&path).unwrap())
             })
             .collect();
@@ -3428,6 +3646,293 @@ mod tests {
         let error = write_project(&dir, &project).unwrap_err();
         assert!(error.contains("belongs to another project"), "{error}");
         assert_eq!(library_snapshot(&dir), before, "a save rewrote a foreign project file");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // --- ticket 08: Trash, restore, explicit permanent deletion ---
+
+    /// Files currently waiting in Trash, sorted by name.
+    fn trash_names(dir: &Path) -> Vec<String> {
+        let trash = dir.join("trash");
+        if !trash.exists() {
+            return Vec::new();
+        }
+        let mut names: Vec<String> = fs::read_dir(trash)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// An id that starts with `project().id`, which must never be claimed by it.
+    fn neighbouring_project() -> Project {
+        let mut other = project();
+        other.id = "0a1b2cff".into();
+        other.title = "Other CV".into();
+        other.cv.name = "Grace Hopper".into();
+        other
+    }
+
+    #[test]
+    fn delete_moves_the_saved_file_previous_revision_and_damaged_copy_to_trash() {
+        let dir = temp_dir("trash-move");
+        let project = project();
+        write_project(&dir, &project).unwrap();
+        let first = project.cv.summary.clone();
+        let mut second = project.clone();
+        second.cv.summary = "Second saved revision.".into();
+        write_project(&dir, &second).unwrap();
+        let damaged = b"corrupt current".to_vec();
+        let current = project_path(&dir, &project.id).unwrap();
+        fs::write(&current, &damaged).unwrap();
+        let kept = preserve_corrupt(&dir, &project.id).unwrap().unwrap();
+        let neighbour = neighbouring_project();
+        write_project(&dir, &neighbour).unwrap();
+
+        delete_in(&dir, &project.id, Language::English).unwrap();
+
+        // The whole project left the active library; the neighbouring CV stayed.
+        assert_eq!(listed(&dir), vec![format!("{}.json", neighbour.id)]);
+        assert!(!current.exists(), "the saved file stayed in the library");
+        let names = trash_names(&dir);
+        assert_eq!(names.len(), 3, "trash must hold the saved file, its previous revision and the damaged copy: {names:?}");
+        assert!(names.contains(&format!("{}.json", project.id)));
+        assert!(names.contains(&format!("{}.prev.json", project.id)));
+        assert!(names.contains(&kept.file_name().unwrap().to_string_lossy().into_owned()));
+
+        // Bytes moved unchanged: no copy was rewritten by the move.
+        assert_eq!(fs::read(dir.join("trash").join(format!("{}.json", project.id))).unwrap(), damaged);
+        assert_eq!(
+            read_project_file(&dir.join("trash").join(format!("{}.prev.json", project.id))).unwrap().cv.summary,
+            first
+        );
+
+        // The trashed CV is listed for restore, marked damaged from its kept revision.
+        let trashed = summaries_in(&trash_dir(&dir)).unwrap();
+        assert_eq!(trashed.len(), 1);
+        assert_eq!(trashed[0].id, project.id);
+        assert_eq!(trashed[0].name, "Ada Lovelace");
+        assert!(trashed[0].damaged);
+
+        // Deleting it again is reported, and nothing cleans Trash automatically.
+        assert!(delete_in(&dir, &project.id, Language::English).is_err());
+        assert_eq!(summaries_in(&trash_dir(&dir)).unwrap().len(), 1);
+        assert_eq!(trash_names(&dir).len(), 3);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn restore_returns_the_cv_and_its_recovery_state_and_still_renders() {
+        let dir = temp_dir("trash-restore");
+        let project = project();
+        write_project(&dir, &project).unwrap();
+        let first = project.cv.summary.clone();
+        let mut second = project.clone();
+        second.cv.summary = "Second saved revision.".into();
+        write_project(&dir, &second).unwrap();
+
+        delete_in(&dir, &project.id, Language::English).unwrap();
+        // A half-finished permanent deletion can leave its save guard behind; the
+        // restore must clear it or the restored CV could never be saved.
+        fs::write(deleted_marker(&dir, &project.id).unwrap(), b"").unwrap();
+        restore_in(&dir, &project.id, Language::English).unwrap();
+
+        assert_eq!(listed(&dir), vec![format!("{}.json", project.id)]);
+        assert!(trash_names(&dir).is_empty(), "restore left a copy in Trash");
+        assert!(!deleted_marker(&dir, &project.id).unwrap().exists(), "restore kept the deletion marker");
+        let restored = read_project(&dir, &project.id).unwrap();
+        assert_eq!(restored.cv.summary, "Second saved revision.");
+        assert_eq!(
+            read_project_file(&previous_path(&dir, &project.id).unwrap()).unwrap().cv.summary,
+            first,
+            "the previous revision did not travel with the restored CV"
+        );
+
+        // The restored CV reopens and generates a PDF with its content.
+        let reopened = open_in(&dir, &project.id, Language::English).unwrap();
+        assert!(reopened.recovery.is_none());
+        let document = render_document(&reopened.project.cv, reopened.project.structure, reopened.project.content_language).unwrap();
+        assert!(document_text(&document).contains("Ada Lovelace"));
+
+        // Saving works again: the Trash marker does not outlive the restore.
+        let mut edited = restored;
+        edited.cv.summary = "Edited after restore.".into();
+        save_in(&dir, &edited, Language::English).unwrap();
+        assert_eq!(read_project(&dir, &project.id).unwrap().cv.summary, "Edited after restore.");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_damaged_cv_survives_trash_restore_and_recovery() {
+        let dir = temp_dir("trash-damaged");
+        let project = project();
+        write_project(&dir, &project).unwrap();
+        let first = project.cv.summary.clone();
+        let mut second = project.clone();
+        second.cv.summary = "Second saved revision.".into();
+        write_project(&dir, &second).unwrap();
+        fs::write(project_path(&dir, &project.id).unwrap(), b"corrupt current").unwrap();
+
+        delete_in(&dir, &project.id, Language::English).unwrap();
+        assert!(summaries_in(&dir).unwrap().is_empty(), "a damaged CV was deleted from view but still listed");
+        assert!(summaries_in(&trash_dir(&dir)).unwrap()[0].damaged);
+
+        restore_in(&dir, &project.id, Language::English).unwrap();
+        let opened = open_in(&dir, &project.id, Language::English).unwrap();
+        assert_eq!(opened.project.cv.summary, first, "recovery lost the previous revision after a Trash round-trip");
+        assert!(opened.recovery.unwrap().notice.contains("previous saved revision"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn restore_refuses_to_overwrite_an_active_project() {
+        let dir = temp_dir("trash-collision");
+        let project = project();
+        write_project(&dir, &project).unwrap();
+        delete_in(&dir, &project.id, Language::English).unwrap();
+
+        // A new project happens to use the same identity while the old one waits in Trash.
+        write_project(&dir, &project).unwrap();
+        let active = library_snapshot(&dir);
+        let trashed = trash_names(&dir);
+
+        let error = restore_in(&dir, &project.id, Language::English).unwrap_err();
+        assert!(error.contains("already in the library"), "{error}");
+        assert_eq!(library_snapshot(&dir), active, "restore overwrote an active project");
+        assert_eq!(trash_names(&dir), trashed, "restore moved a copy it refused to place");
+
+        // Once the active copy is removed, the same restore succeeds.
+        fs::remove_file(project_path(&dir, &project.id).unwrap()).unwrap();
+        restore_in(&dir, &project.id, Language::English).unwrap();
+        assert_eq!(listed(&dir), vec![format!("{}.json", project.id)]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn permanent_deletion_removes_only_the_selected_cv_and_leaves_exported_backups() {
+        let dir = temp_dir("trash-permanent");
+        let project = project();
+        let neighbour = neighbouring_project();
+        for entry in [&project, &neighbour] {
+            write_project(&dir, entry).unwrap();
+            let mut second = entry.clone();
+            second.cv.summary = "Second saved revision.".into();
+            write_project(&dir, &second).unwrap();
+        }
+        delete_in(&dir, &project.id, Language::English).unwrap();
+        delete_in(&dir, &neighbour.id, Language::English).unwrap();
+
+        // An exported backup outside the library is not part of deletion.
+        let files = temp_dir("trash-external-backup");
+        let backup = files.join("cv-backup.json");
+        fs::write(&backup, b"{\"format\":\"cv-generator-backup\"}").unwrap();
+        let before = fs::read(&backup).unwrap();
+
+        delete_permanently_in(&dir, &project.id, Language::English).unwrap();
+
+        let names = trash_names(&dir);
+        assert_eq!(
+            names,
+            vec![format!("{}.deleted.json", project.id), format!("{}.json", neighbour.id), format!("{}.prev.json", neighbour.id)],
+            "permanent deletion touched another CV: {names:?}"
+        );
+        assert!(summaries_in(&trash_dir(&dir)).unwrap().iter().all(|entry| entry.id != project.id));
+        assert_eq!(fs::read(&backup).unwrap(), before, "an exported backup outside the library changed");
+
+        // The neighbouring CV is still restorable after the other was erased.
+        restore_in(&dir, &neighbour.id, Language::English).unwrap();
+        assert_eq!(listed(&dir), vec![format!("{}.json", neighbour.id)]);
+        assert_eq!(read_project(&dir, &neighbour.id).unwrap().cv.name, "Grace Hopper");
+
+        delete_in(&dir, &neighbour.id, Language::English).unwrap();
+        delete_permanently_in(&dir, &neighbour.id, Language::English).unwrap();
+        assert!(summaries_in(&trash_dir(&dir)).unwrap().is_empty(), "a permanently deleted CV is still listed in Trash");
+        assert!(delete_permanently_in(&dir, &neighbour.id, Language::English).is_err());
+        let _ = fs::remove_dir_all(&files);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failed_internal_cleanup_keeps_the_trash_row_retryable() {
+        let dir = temp_dir("trash-retry");
+        let project = project();
+        write_project(&dir, &project).unwrap();
+        let mut second = project.clone();
+        second.cv.summary = "Second saved revision.".into();
+        write_project(&dir, &second).unwrap();
+        delete_in(&dir, &project.id, Language::English).unwrap();
+
+        // A folder where a recovery copy belongs makes that removal fail. The
+        // listed saved file must survive so the row stays and can be retried.
+        let blocked = trash_dir(&dir).join(format!("{}.corrupt-blocked.json", project.id));
+        fs::create_dir(&blocked).unwrap();
+        let error = delete_permanently_in(&dir, &project.id, Language::English).unwrap_err();
+        assert!(!error.is_empty());
+        assert!(
+            trash_path(&dir, &project.id).unwrap().exists(),
+            "a failed cleanup unlisted the CV before it was gone"
+        );
+        assert_eq!(summaries_in(&trash_dir(&dir)).unwrap().len(), 1);
+        assert!(deleted_marker(&dir, &project.id).unwrap().exists());
+
+        fs::remove_dir(&blocked).unwrap();
+        delete_permanently_in(&dir, &project.id, Language::English).unwrap();
+        assert!(summaries_in(&trash_dir(&dir)).unwrap().is_empty(), "the retried cleanup left the row");
+        assert!(
+            deleted_marker(&dir, &project.id).unwrap().exists(),
+            "a retried deletion must still block a late save"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_late_save_cannot_resurrect_a_deleted_or_permanently_deleted_cv() {
+        let dir = temp_dir("trash-no-resurrect");
+        let project = project();
+        write_project(&dir, &project).unwrap();
+        delete_in(&dir, &project.id, Language::English).unwrap();
+
+        // A save already in flight when the CV reached Trash must not write it back.
+        let error = save_in(&dir, &project, Language::English).unwrap_err();
+        assert!(error.contains("in Trash"), "{error}");
+        assert!(!project_path(&dir, &project.id).unwrap().exists(), "a late save recreated a trashed CV");
+        assert!(summaries_in(&dir).unwrap().is_empty());
+
+        delete_permanently_in(&dir, &project.id, Language::English).unwrap();
+        let error = save_in(&dir, &project, Language::English).unwrap_err();
+        assert!(error.contains("permanently deleted"), "{error}");
+        assert!(!project_path(&dir, &project.id).unwrap().exists(), "a late save resurrected a deleted CV");
+        assert!(summaries_in(&dir).unwrap().is_empty());
+        assert!(summaries_in(&trash_dir(&dir)).unwrap().is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn trash_controls_and_refusals_follow_the_interface_language() {
+        let dir = temp_dir("trash-messages");
+        let project = project();
+        write_project(&dir, &project).unwrap();
+
+        let english = delete_in(&dir, "missing-cv", Language::English).unwrap_err();
+        let indonesian = delete_in(&dir, "missing-cv", Language::Indonesian).unwrap_err();
+        assert!(english.contains("not in the library"), "{english}");
+        assert!(indonesian.contains("tidak ada di pustaka"), "{indonesian}");
+
+        delete_in(&dir, &project.id, Language::English).unwrap();
+        let english = restore_in(&dir, &neighbouring_project().id, Language::English).unwrap_err();
+        let indonesian = restore_in(&dir, &neighbouring_project().id, Language::Indonesian).unwrap_err();
+        assert!(english.contains("no longer in Trash"), "{english}");
+        assert!(indonesian.contains("tidak lagi ada di Sampah"), "{indonesian}");
+
+        let error = save_in(&dir, &project, Language::Indonesian).unwrap_err();
+        assert!(error.contains("ada di Sampah") && !error.contains("in Trash"), "{error}");
+
+        let english = delete_permanently_in(&dir, "missing-cv", Language::English).unwrap_err();
+        let indonesian = delete_permanently_in(&dir, "missing-cv", Language::Indonesian).unwrap_err();
+        assert!(english.contains("no longer in Trash"), "{english}");
+        assert!(indonesian.contains("tidak lagi ada di Sampah"), "{indonesian}");
         let _ = fs::remove_dir_all(&dir);
     }
 }
