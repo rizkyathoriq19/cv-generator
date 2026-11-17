@@ -4,7 +4,7 @@
 
 **Blocked by:** 05 — Duplicate CVs and separate interface/content languages; 08 — Move CVs to Trash, restore, and permanently delete safely; 09 — Keep PDF export current and the full editor keyboard-accessible.
 
-**Status:** partially implemented — packages built and verified in a containerized Ubuntu 24.04.5 install; no native Ubuntu host or VM was available, and the full safety/accessibility matrix is not complete. Evidence: [ticket 10](../../evidence/ticket10/README.md).
+**Status:** partially implemented — packages built and verified in a containerized Ubuntu 24.04.5 install; no native Ubuntu host or VM was available, and the full safety/accessibility matrix is not complete. Evidence: [ticket 10](../../evidence/ticket10/README.md). Published in PR #8.
 
 **Proposed triage:** ready-for-agent after approval. Execution still requires explicit implementation authorization.
 
