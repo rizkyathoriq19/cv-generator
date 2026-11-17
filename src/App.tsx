@@ -23,12 +23,17 @@ import {
   ProjectsSection,
   SkillsSection,
 } from './Sections';
-import { sha256, showPdf } from './pdf';
+import { sha256, pdfPages } from './pdf';
+import { canReusePreview, contentKey, previewState } from './freshness';
 import { LANGS, LangContext, STRINGS, saveLang, storedLang, type Strings } from './i18n';
 
-type Preview = { revision: number; pages: number; sha256: string };
+type Preview = { revision: number; pages: number; sha256: string; key: string };
 type RenderState = 'idle' | 'rendering' | 'ready' | 'failed';
 type SaveState = 'idle' | 'waiting' | 'saving' | 'saved' | 'failed';
+type Pane = 'form' | 'preview';
+
+/** Below this width the editor and the preview are tabs, not columns. */
+const NARROW = '(max-width: 900px)';
 
 const SAVE_KEY: Record<SaveState, keyof Strings> = {
   idle: 'saveIdle',
@@ -75,6 +80,19 @@ function LanguageChoice({
   );
 }
 
+/** True while the window is too narrow for a side-by-side editor and preview. */
+function useNarrow(): boolean {
+  const [narrow, setNarrow] = useState(() => window.matchMedia(NARROW).matches);
+  useEffect(() => {
+    const media = window.matchMedia(NARROW);
+    const update = () => setNarrow(media.matches);
+    update();
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
+  }, []);
+  return narrow;
+}
+
 export default function App() {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [trash, setTrash] = useState<ProjectSummary[]>([]);
@@ -88,7 +106,7 @@ export default function App() {
   const [preview, setPreview] = useState<Preview | null>(null);
   const [status, setStatus] = useState<RenderState>('idle');
   const [error, setError] = useState('');
-  const [exported, setExported] = useState<(ExportAck & { matches: boolean }) | null>(null);
+  const [exported, setExported] = useState<(ExportAck & { matches: boolean; changed: boolean }) | null>(null);
   const [backupStatus, setBackupStatus] = useState('');
   const [recovery, setRecovery] = useState('');
   // A close that could not save waits here until the user chooses how to go on.
@@ -97,6 +115,9 @@ export default function App() {
   const cancelDelete = useRef<HTMLButtonElement>(null);
   const confirmDelete = useRef<HTMLButtonElement>(null);
   const [lang, setLang] = useState<Lang>(storedLang);
+  const narrow = useNarrow();
+  // Narrow windows show one pane at a time; wide ones show both together.
+  const [pane, setPane] = useState<Pane>('form');
 
   const t = STRINGS[lang];
   // The reader's language, readable from callbacks that must not re-run when it
@@ -389,33 +410,44 @@ export default function App() {
 
   // --- preview -------------------------------------------------------------
 
-  const render = useCallback(async (input: Cv, structure: Structure, contentLanguage: Lang) => {
-    const rev = ++revision.current;
-    latest.current = rev;
-    setStatus('rendering');
-    setError('');
-    try {
-      // Rust renders once and caches these exact bytes for export.
-      const buffer = await invoke<ArrayBuffer>('render_pdf', {
-        cv: input,
-        structure,
-        contentLanguage,
-        interfaceLanguage: langRef.current,
-        revision: rev,
-      });
-      if (latest.current !== rev) return; // late result from older content
-      const bytes = new Uint8Array(buffer);
-      const hash = await sha256(bytes);
-      const pages = await showPdf(bytes, host.current!);
-      if (latest.current !== rev) return;
-      setPreview({ revision: rev, pages, sha256: hash });
-      setStatus('ready');
-    } catch (e) {
-      if (latest.current !== rev) return;
-      setError(String(e));
-      setStatus('failed'); // older preview may stay visible, marked outdated
-    }
-  }, []);
+  const render = useCallback(
+    async (input: Cv, structure: Structure, contentLanguage: Lang): Promise<Preview | null> => {
+      const rev = ++revision.current;
+      latest.current = rev;
+      // The revision the bytes belong to: any later edit, structure, or content
+      // language change makes this key differ and marks the preview outdated.
+      const key = contentKey({ cv: input, structure, content_language: contentLanguage });
+      setStatus('rendering');
+      setError('');
+      try {
+        // Rust renders once and caches these exact bytes for export.
+        const buffer = await invoke<ArrayBuffer>('render_pdf', {
+          cv: input,
+          structure,
+          contentLanguage,
+          interfaceLanguage: langRef.current,
+          revision: rev,
+        });
+        if (latest.current !== rev) return null; // late result from older content
+        const bytes = new Uint8Array(buffer);
+        const hash = await sha256(bytes);
+        const { pages, canvases } = await pdfPages(bytes);
+        // Only the newest render may replace what is on screen, pages included.
+        if (latest.current !== rev) return null;
+        host.current?.replaceChildren(...canvases);
+        const done = { revision: rev, pages, sha256: hash, key };
+        setPreview(done);
+        setStatus('ready');
+        return done;
+      } catch (e) {
+        if (latest.current !== rev) return null;
+        setError(String(e));
+        setStatus('failed'); // older preview may stay visible, marked outdated
+        return null;
+      }
+    },
+    [],
+  );
 
   const cv = doc?.cv;
   const structure = doc?.structure;
@@ -430,10 +462,25 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [cv, structure, contentLanguage, render]);
 
+  // A doc edit before the debounce fires already makes the visible bytes stale.
+  const key = doc ? contentKey(doc) : '';
+  const freshness = previewState(preview, key);
+  const stale = freshness === 'outdated';
+
+  /**
+   * Export ships the previewed artifact only while it is the current content;
+   * otherwise it generates and shows the current revision first. A failed render
+   * leaves the older preview visibly outdated and writes nothing.
+   */
   const exportPdf = async () => {
-    if (!preview || !doc) return;
+    if (!doc) return;
     setExported(null);
     setError('');
+    const target = contentKey(doc);
+    const fresh = canReusePreview(preview, target, status === 'rendering')
+      ? preview
+      : await render(doc.cv, doc.structure, doc.content_language);
+    if (!fresh) return;
     try {
       const path = await saveDialog({
         defaultPath: `${doc.cv.name.trim() || 'cv'}.pdf`,
@@ -441,14 +488,16 @@ export default function App() {
       });
       if (!path) return;
       const ack = await invoke<ExportAck>('export_pdf', {
-        revision: preview.revision,
         path,
         cv: doc.cv,
         structure: doc.structure,
         contentLanguage: doc.content_language,
         interfaceLanguage: lang,
       });
-      setExported({ ...ack, matches: ack.sha256 === preview.sha256 });
+      // An edit after this export started means the saved file is not, and never
+      // was, the current CV: say so instead of presenting it as current.
+      const changed = !docRef.current || contentKey(docRef.current) !== target;
+      setExported({ ...ack, matches: ack.sha256 === fresh.sha256, changed });
     } catch (e) {
       setError(String(e));
     }
@@ -659,7 +708,18 @@ export default function App() {
       </header>
 
       <main>
-        <section className="form" aria-label={t.editorAria}>
+        {narrow && (
+          <div className="tabs" role="group" aria-label={t.panesAria}>
+            <button type="button" aria-pressed={pane === 'form'} onClick={() => setPane('form')}>
+              {t.formTab}
+            </button>
+            <button type="button" aria-pressed={pane === 'preview'} onClick={() => setPane('preview')}>
+              {t.previewAria}
+            </button>
+          </div>
+        )}
+
+        <section className="form" aria-label={t.editorAria} hidden={narrow && pane !== 'form'}>
           {recovery && (
             <p className="notice" role="status">
               {recovery}
@@ -767,7 +827,7 @@ export default function App() {
             >
               {t.renderPreview}
             </button>
-            <button type="button" onClick={() => void exportPdf()} disabled={!preview || status === 'failed'}>
+            <button type="button" onClick={() => void exportPdf()}>
               {t.exportPdf}
             </button>
             <button type="button" onClick={() => void exportBackup()}>
@@ -790,7 +850,7 @@ export default function App() {
             <dd>
               {preview
                 ? `${preview.pages} ${t.pageCount}, ${t.revision} ${preview.revision}${
-                    status === 'failed' ? ` ${t.outdated}` : ''
+                    stale ? ` ${t.outdated}` : ''
                   }`
                 : t.none}
             </dd>
@@ -807,6 +867,13 @@ export default function App() {
             <dt>{t.exportHash}</dt>
             <dd className="hash">{exported?.sha256 ?? '—'}</dd>
           </dl>
+
+          {/* Announced, not just appended to the export line: the file is stale. */}
+          {exported?.changed && (
+            <p className="notice" role="status">
+              {t.exportChanged}
+            </p>
+          )}
 
           {exported && exported.warnings.length > 0 && (
             <ul className="warning" role="status">
@@ -829,8 +896,18 @@ export default function App() {
           )}
         </section>
 
-        <section className="preview" aria-label={t.previewAria}>
-          {status === 'rendering' && <p className="muted">{t.rendering}</p>}
+        <section className="preview" aria-label={t.previewAria} hidden={narrow && pane !== 'preview'}>
+          {status === 'rendering' && (
+            <p className="muted" role="status">
+              {t.rendering}
+            </p>
+          )}
+          {/* Prior bytes stay visible while regenerating, explicitly outdated. */}
+          {preview && stale && (
+            <p className="notice" role="status">
+              {status === 'failed' ? t.previewOutdatedFailed : t.previewOutdated}
+            </p>
+          )}
           <div ref={host} className="pages" />
         </section>
       </main>

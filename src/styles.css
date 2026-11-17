@@ -389,6 +389,20 @@ button:disabled {
   background: #e8e8e4;
 }
 
+/* Narrow windows: the editor and the preview are panes, not columns.
+   Keep the breakpoint in sync with NARROW in src/App.tsx. */
+.tabs {
+  display: flex;
+  gap: 8px;
+  padding: 10px 20px 0;
+  background: #fafaf8;
+}
+
+.tabs button[aria-pressed='true'] {
+  border-color: #2f6bd8;
+  background: #e8effb;
+}
+
 .pages {
   display: flex;
   flex-direction: column;
@@ -405,7 +419,7 @@ button:disabled {
 @media (max-width: 900px) {
   main {
     grid-template-columns: 1fr;
-    grid-template-rows: 1fr 1fr;
+    grid-template-rows: auto 1fr;
   }
 
   .form {

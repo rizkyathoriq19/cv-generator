@@ -3,8 +3,8 @@ import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
 
-/** Render the actual generated PDF bytes into one canvas per page. */
-export async function showPdf(bytes: Uint8Array, host: HTMLElement): Promise<number> {
+/** Draw the actual generated PDF bytes into one canvas per page, off-document. */
+export async function pdfPages(bytes: Uint8Array): Promise<{ pages: number; canvases: HTMLCanvasElement[] }> {
   const task = pdfjs.getDocument({ data: bytes });
   const doc = await task.promise;
   const dpr = window.devicePixelRatio || 1;
@@ -24,8 +24,9 @@ export async function showPdf(bytes: Uint8Array, host: HTMLElement): Promise<num
       await page.render({ canvas, viewport }).promise;
       canvases.push(canvas);
     }
-    host.replaceChildren(...canvases);
-    return doc.numPages;
+    // Returned detached: the caller inserts them only if this render is still
+    // current, so a late result can never replace newer pages on screen.
+    return { pages: doc.numPages, canvases };
   } finally {
     // cleanup() only drops page caches; destroy() also releases the worker document.
     await task.destroy();
