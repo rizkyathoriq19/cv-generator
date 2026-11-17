@@ -77,6 +77,10 @@ function LanguageChoice({
 
 export default function App() {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  const [trash, setTrash] = useState<ProjectSummary[]>([]);
+  const [showTrash, setShowTrash] = useState(false);
+  // Permanent deletion waits for an explicit confirmation, never a row click.
+  const [pendingDelete, setPendingDelete] = useState<ProjectSummary | null>(null);
   const [doc, setDoc] = useState<Project | null>(null);
   const [dirty, setDirty] = useState(false);
   const [saveState, setSaveState] = useState<SaveState>('idle');
@@ -89,6 +93,9 @@ export default function App() {
   const [recovery, setRecovery] = useState('');
   // A close that could not save waits here until the user chooses how to go on.
   const [closePrompt, setClosePrompt] = useState<null | 'app' | 'library'>(null);
+  // A permanent-deletion confirmation traps Tab between its two buttons.
+  const cancelDelete = useRef<HTMLButtonElement>(null);
+  const confirmDelete = useRef<HTMLButtonElement>(null);
   const [lang, setLang] = useState<Lang>(storedLang);
 
   const t = STRINGS[lang];
@@ -117,7 +124,12 @@ export default function App() {
 
   const refreshLibrary = useCallback(async () => {
     try {
-      setProjects(await invoke<ProjectSummary[]>('list_projects'));
+      const [active, trashed] = await Promise.all([
+        invoke<ProjectSummary[]>('list_projects'),
+        invoke<ProjectSummary[]>('list_trash'),
+      ]);
+      setProjects(active);
+      setTrash(trashed);
     } catch (e) {
       setError(String(e));
     }
@@ -280,6 +292,61 @@ export default function App() {
     setClosePrompt(target);
   };
 
+  // --- Trash ----------------------------------------------------------------
+
+  /** Delete resolves pending edits first; a failed flush keeps the CV in the library. */
+  const moveToTrash = async (id: string) => {
+    setError('');
+    if (!(await flush())) return;
+    try {
+      await invoke('delete_project', { id, interfaceLanguage: lang });
+      await refreshLibrary();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const restoreProject = async (id: string) => {
+    setError('');
+    try {
+      await invoke('restore_project', { id, interfaceLanguage: lang });
+      await refreshLibrary();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  /** Only the confirmation dialog calls this: permanent deletion is never implicit. */
+  const deletePermanently = async (id: string) => {
+    setError('');
+    try {
+      await invoke('delete_project_permanently', { id, interfaceLanguage: lang });
+      setPendingDelete(null);
+      await refreshLibrary();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  // While the confirmation is open it owns the keyboard: Tab cycles its two
+  // buttons and Escape cancels, even after a click moved focus to the dialog body.
+  useEffect(() => {
+    if (!pendingDelete) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setPendingDelete(null);
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      event.preventDefault();
+      const other =
+        document.activeElement === cancelDelete.current ? confirmDelete.current : cancelDelete.current;
+      other?.focus();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [pendingDelete]);
+
   // Closing the window is a normal close: pending edits are written first. If the
   // write fails, the window stays open and the close choices appear.
   useEffect(() => {
@@ -436,10 +503,60 @@ export default function App() {
           <button type="button" onClick={() => void importBackup()}>
             {t.importBackup}
           </button>
+          <button
+            type="button"
+            aria-pressed={showTrash}
+            onClick={() => {
+              setError('');
+              setShowTrash((current) => !current);
+            }}
+          >
+            {t.trash} ({trash.length})
+          </button>
         </div>
-        <p className="muted note">{t.backupNote}</p>
+        <p className="muted note">{showTrash ? t.trashNote : t.backupNote}</p>
 
-        {projects.length === 0 ? (
+        {showTrash ? (
+          trash.length === 0 ? (
+            <p className="muted">{t.trashEmpty}</p>
+          ) : (
+            <ul className="list">
+              {trash.map((project) => {
+                const label = projectLabel(project, t.untitledCv);
+                return (
+                  <li key={project.id} className="project-row">
+                    <span className="row-label">
+                      <span>
+                        {label}
+                        {project.damaged && <span className="tag"> · {t.damaged}</span>}
+                      </span>
+                      {project.updated_at > 0 && (
+                        <span className="muted">{new Date(project.updated_at * 1000).toLocaleString(dateLocale)}</span>
+                      )}
+                    </span>
+                    <button
+                      type="button"
+                      aria-label={`${t.restore} ${label}`}
+                      onClick={() => void restoreProject(project.id)}
+                    >
+                      {t.restore}
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`${t.deletePermanently} ${label}`}
+                      onClick={() => {
+                        setError('');
+                        setPendingDelete(project);
+                      }}
+                    >
+                      {t.deletePermanently}
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )
+        ) : projects.length === 0 ? (
           <p className="muted">{t.noCvs}</p>
         ) : (
           <ul className="list">
@@ -468,18 +585,55 @@ export default function App() {
                   >
                     {t.duplicate}
                   </button>
+                  <button
+                    type="button"
+                    aria-label={`${t.moveToTrash} ${label}`}
+                    onClick={() => void moveToTrash(project.id)}
+                  >
+                    {t.moveToTrash}
+                  </button>
                 </li>
               );
             })}
           </ul>
         )}
 
-        {error && (
+        {!pendingDelete && error && (
           <p className="error" role="alert">
             {error}
           </p>
         )}
       </main>
+
+      {pendingDelete && (
+        <div
+          className="overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-title"
+        >
+          <div className="dialog">
+            <h2 id="delete-title">{t.deleteTitle}</h2>
+            <p className="muted">{t.deleteBody}</p>
+            <p>
+              <strong>{projectLabel(pendingDelete, t.untitledCv)}</strong>
+            </p>
+            {error && (
+              <p className="error" role="alert">
+                {error}
+              </p>
+            )}
+            <div className="actions">
+              <button type="button" ref={cancelDelete} autoFocus onClick={() => setPendingDelete(null)}>
+                {t.cancel}
+              </button>
+              <button type="button" ref={confirmDelete} onClick={() => void deletePermanently(pendingDelete.id)}>
+                {t.deletePermanently}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   ) : (
     <div className="app">

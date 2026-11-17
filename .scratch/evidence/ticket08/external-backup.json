@@ -1,0 +1,21 @@
+{
+  "format": "cv-generator-backup",
+  "version": 1,
+  "title": "External backup fixture",
+  "structure": "reverse-chronological",
+  "content_language": "english",
+  "cv": {
+    "name": "External Backup Fixture",
+    "email": "fixture@example.invalid",
+    "phone": "",
+    "location": "Testville",
+    "links": [],
+    "summary": "This exported backup lives outside the library and must survive deletion.",
+    "experience": [],
+    "education": [],
+    "skills": [],
+    "projects": [],
+    "certifications": [],
+    "languages": []
+  }
+}
