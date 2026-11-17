@@ -4,7 +4,7 @@
 
 **Blocked by:** 04 — Switch between all three structures without losing content.
 
-**Status:** implemented and application-verified on Arch/Omarchy (evidence: [ticket 09](../../evidence/ticket09/README.md)); late renders, failed writes and the stale-preview export branch are proven at the code/test seam only, as listed there.
+**Status:** implemented and application-verified on Arch/Omarchy (evidence: [ticket 09](../../evidence/ticket09/README.md)); late renders, failed writes and the stale-preview export branch are proven at the code/test seam only, as listed there. Published in PR #7.
 
 **Proposed triage:** ready-for-agent after approval. Execution still requires explicit implementation authorization.
 
