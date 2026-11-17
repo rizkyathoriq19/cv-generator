@@ -24,12 +24,35 @@
   },
   "bundle": {
     "active": true,
+    "category": "Productivity",
+    "shortDescription": "Offline desktop CV generator",
+    "longDescription": "Prepare ATS-friendly CVs for job applications fully offline: edit career content, switch between reverse chronological, functional and combination structures, preview generated PDFs, and keep local editable backups.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "linux": {
+      "deb": {
+        "files": {
+          "/usr/share/doc/cv-generator/third-party-notices.md": "../docs/third-party-notices.md",
+          "/usr/share/doc/cv-generator/install.md": "../docs/linux-install.md",
+          "/usr/share/doc/cv-generator/LICENSE-Apache-2.0.txt": "../node_modules/pdfjs-dist/LICENSE",
+          "/usr/share/doc/cv-generator/LICENSE-MIT-React.txt": "../node_modules/react/LICENSE",
+          "/usr/share/doc/cv-generator/LICENSE-LiberationSerif.txt": "fonts/LICENSE-LiberationSerif.txt"
+        }
+      },
+      "appimage": {
+        "files": {
+          "usr/share/doc/cv-generator/third-party-notices.md": "../docs/third-party-notices.md",
+          "usr/share/doc/cv-generator/install.md": "../docs/linux-install.md",
+          "usr/share/doc/cv-generator/LICENSE-Apache-2.0.txt": "../node_modules/pdfjs-dist/LICENSE",
+          "usr/share/doc/cv-generator/LICENSE-MIT-React.txt": "../node_modules/react/LICENSE",
+          "usr/share/doc/cv-generator/LICENSE-LiberationSerif.txt": "fonts/LICENSE-LiberationSerif.txt"
+        }
+      }
+    }
   }
 }
