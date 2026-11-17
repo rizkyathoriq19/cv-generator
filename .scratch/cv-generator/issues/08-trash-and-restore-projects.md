@@ -4,7 +4,7 @@
 
 **Blocked by:** 07 — Recover saved CVs and close safely after storage failures.
 
-**Status:** implemented on `ticket-08-trash-and-restore`; application-verified on Arch/Omarchy with synthetic fixtures in an isolated library.
+**Status:** implemented on `ticket-08-trash-and-restore`; application-verified on Arch/Omarchy with synthetic fixtures in an isolated library. Published in PR #6.
 
 **Story coverage:** US-49, US-50, US-51, US-55.
 
