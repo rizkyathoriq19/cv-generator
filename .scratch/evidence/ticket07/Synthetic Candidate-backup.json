@@ -1,0 +1,84 @@
+{
+  "format": "cv-generator-backup",
+  "version": 1,
+  "title": "Recovery demo with unsaved edits discarded later probe close choices backup while failed",
+  "structure": "reverse-chronological",
+  "content_language": "english",
+  "cv": {
+    "name": "Synthetic Candidate",
+    "email": "candidate@example.invalid",
+    "phone": "",
+    "location": "Testville",
+    "links": [
+      {
+        "label": "Portfolio",
+        "url": "https://example.invalid/portfolio"
+      }
+    ],
+    "summary": "First saved revision stays here.",
+    "experience": [
+      {
+        "title": "Synthetic Engineer",
+        "company": "Example Employer",
+        "location": "Testville",
+        "start": {
+          "year": 2020,
+          "month": 5
+        },
+        "end": null,
+        "bullets": [
+          "Authored achievement bullet."
+        ]
+      }
+    ],
+    "education": [
+      {
+        "school": "Test University",
+        "degree": "BSc Testing",
+        "location": "Testville",
+        "start": {
+          "year": 2016,
+          "month": 8
+        },
+        "end": {
+          "year": 2019,
+          "month": 5
+        },
+        "bullets": [
+          "Authored education bullet."
+        ]
+      }
+    ],
+    "skills": [
+      {
+        "name": "Test automation",
+        "bullets": [
+          "Authored skill bullet."
+        ]
+      }
+    ],
+    "projects": [
+      {
+        "name": "Synthetic project",
+        "detail": "Local tooling",
+        "bullets": []
+      }
+    ],
+    "certifications": [
+      {
+        "name": "Certified tester",
+        "issuer": "Test board",
+        "date": {
+          "year": 2023,
+          "month": null
+        }
+      }
+    ],
+    "languages": [
+      {
+        "name": "Indonesian",
+        "level": "Native"
+      }
+    ]
+  }
+}

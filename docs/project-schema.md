@@ -10,6 +10,18 @@ One CV project is one JSON file in the application-managed local library:
 (for example `~/.local/share/app.cvgen.desktop` on Linux). The application creates
 the `projects` directory itself; users do not choose working-file locations.
 
+The library folder also holds two non-project files per CV, which are never listed
+as CVs because their names are not project ids:
+
+| File | Meaning |
+| --- | --- |
+| `<id>.prev.json` | The one rolling previous valid saved revision, replaced on every save. |
+| `<id>.corrupt-<nanoseconds>.json` | Damaged bytes preserved when an unreadable current file was recovered. |
+
+One running instance owns the library through `<app data dir>/instance.lock`; the
+operating system releases the lock when the process exits, so a crash leaves no
+stale lock.
+
 ## Shape
 
 ```json
@@ -98,8 +110,33 @@ survive save/reopen.
 
 ## Durability and validation rules
 
-- Saves write a temporary file in the same directory and rename it over the project
-  file, so a failed write leaves the previous version intact.
+- Saves retain exactly one rolling previous valid revision. The sequence is: prepare
+  the new bytes, copy a valid current file to `<id>.prev.json` (temp file + rename),
+  then rename the new bytes over `<id>.json`. A failure at any step leaves the current
+  file byte-identical, so a crash or a denied write cannot lose the last saved CV. A
+  current file that no longer parses is never rotated, because that would overwrite
+  the only recoverable revision. The previous revision is one save behind, not full
+  version history, and edits that never reached a save are not recoverable.
+- An unreadable current file is not silently replaced. Opening the CV copies the
+  damaged bytes to `<id>.corrupt-<nanoseconds>.json`, restores `<id>.prev.json`'s own
+  bytes as the current file (same content and `updated_at`, not a re-serialised
+  edit), and returns an explicit notice naming the kept file. The copy, not a move,
+  keeps the CV at its current path until the replacement lands, so a failed recovery
+  write still leaves a listed, recoverable project. If no valid previous revision
+  exists, nothing is written or blanked: opening reports that the file is missing or
+  damaged and where it remains. A damaged CV stays listed (marked `Damaged`) so it
+  can be opened, recovered, or reported. Damage found while the editor is open is
+  preserved the same way before the next save replaces it, and that save reports the
+  kept file in the editor instead of silently replacing it.
+- A project file this app refuses to read — a newer `version` or another project's
+  `id` — is reported and left byte-identical. It is never quarantined, rolled back to
+  an older revision, or labelled damaged, and a save refuses to overwrite it; the
+  library keeps listing it and opening explains the refusal in the interface language.
+- A failed save keeps the edits in process memory and reports `Save failed`; retrying
+  writes the same edits, and exporting a project backup is a separate operation that
+  does not mark the CV saved. On a normal close pending edits are written first; if
+  that write fails, the application offers Retry / Export backup / Discard and close /
+  Cancel, and only the explicit discard abandons unsaved edits.
 - Completely blank entries, bullets, and sections are omitted from the PDF rather
   than rendered as empty rows or headings.
 - Drafts may be incomplete; export additionally requires an owner name and at least
@@ -113,8 +150,8 @@ survive save/reopen.
   Missing optional content only produces warnings: missing contact details, undated
   entries, and — for the `functional` and `combination` structures only — when no
   skill group has an achievement bullet. The last warning never blocks export.
-- Files are unencrypted plain JSON. Corrupted-file recovery and one rolling previous
-  revision are a later slice and are not part of version 1 behaviour yet.
+- Files are unencrypted plain JSON. No application password, encryption, or
+  secure-erasure guarantee exists; the OS account protects local files.
 
 ## Project backup (version 1)
 

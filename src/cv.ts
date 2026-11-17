@@ -68,6 +68,25 @@ export type ProjectSummary = {
   title: string;
   name: string;
   updated_at: number;
+  /** The saved file is unreadable; opening it recovers or reports the damage. */
+  damaged: boolean;
+};
+
+/** Present only when a damaged file was recovered from its previous revision. */
+export type Recovery = {
+  notice: string;
+  preserved_as?: string;
+};
+
+export type Opened = {
+  project: Project;
+  recovery?: Recovery;
+};
+
+/** A save returns the stored project and, if the file was damaged mid-edit, a notice. */
+export type SaveResult = {
+  project: Project;
+  notice?: string;
 };
 
 export type ExportAck = {

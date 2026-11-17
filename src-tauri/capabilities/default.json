@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Preview and export the locally rendered PDF, and export or import project backups.",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:allow-save", "dialog:allow-open"]
+  "permissions": ["core:default", "core:window:allow-destroy", "dialog:allow-save", "dialog:allow-open"]
 }
