@@ -6,7 +6,7 @@ The application bundles only locally licensed assets; nothing is fetched at runt
 | --- | --- | --- | --- |
 | Typst 0.15.1 (`typst`, `typst-pdf`, `typst-layout`) | PDF generation and layout | Apache-2.0 | `LICENSE-Apache-2.0.txt` (installed beside this file) |
 | PDF.js / pdfjs-dist 6.5.438 | Preview rendering (bundled `pdf.mjs`, `pdf.worker.min.mjs`) | Apache-2.0 | `LICENSE-Apache-2.0.txt` (installed beside this file) |
-| Liberation Serif (Regular, Bold, Italic) | Bundled CV font | SIL Open Font License 1.1 (reserved name "Liberation") | `LICENSE-LiberationSerif.txt` (installed beside this file) |
+| Liberation Sans (Regular, Bold, Italic) | Bundled CV font | SIL Open Font License 1.1 (reserved name "Liberation") | `LICENSE-Liberation.txt` (installed beside this file) |
 | Tauri 2 | Desktop shell | MIT / Apache-2.0 | `LICENSE-Apache-2.0.txt` (installed beside this file) |
 | React / React DOM | UI shell, bundled into the frontend assets | MIT | `LICENSE-MIT-React.txt` (installed beside this file) |
 | Vite | Bundling only; not redistributed | MIT | build-time tool |

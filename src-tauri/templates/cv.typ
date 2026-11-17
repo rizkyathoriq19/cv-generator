@@ -13,9 +13,44 @@
 // Blank (or whitespace-only) content must not produce headings or rows.
 #let filled(s) = s != none and s != "" and s.trim() != ""
 
-#set page(paper: "a4", margin: (x: 2.2cm, y: 1.8cm))
-#set text(font: "Liberation Serif", size: 10.5pt, fill: black)
-#set par(leading: 0.62em, justify: false, linebreaks: "optimized")
+// One conservative presentation for every structure: a single column, real
+// headings (PDF bookmarks), selectable text, black ink plus one grey for
+// secondary facts (employer, dates, contacts). No icons, tables, or columns,
+// so text extraction follows reading order.
+#let ink = rgb("#1a1a1a")
+#let quiet = rgb("#6b6b6b")
+
+#set document(title: if filled(cv.name) { cv.name } else { "CV" })
+// Page numbers only when there is more than one page; contact details never
+// go in the footer.
+#set page(
+  paper: "a4",
+  margin: (x: 2cm, top: 1.8cm, bottom: 2cm),
+  footer: context {
+    let total = counter(page).final().first()
+    if total > 1 {
+      align(right, text(size: 8.5pt, fill: quiet, counter(page).display("1 / 1", both: true)))
+    }
+  },
+)
+#set text(font: "Liberation Sans", size: 10pt, fill: ink, lang: if indonesian { "id" } else { "en" })
+#set par(leading: 0.6em, spacing: 0.6em, justify: false, linebreaks: "optimized")
+#set list(marker: text(size: 8pt, baseline: -0.5pt)[•], indent: 0.2em, body-indent: 0.7em, spacing: 0.5em)
+#show list: set block(above: 0.5em, below: 0.2em)
+
+// Only the heading is sticky; sticking the body too would push a whole section
+// to the next page and leave a nearly empty page behind.
+// No letter-spacing: even 0.1em makes extractors split a heading into
+// fragments ("PRO FESSIO NA L"), which ATS parsers then miss.
+#show heading.where(level: 1): it => block(
+  above: 1.7em,
+  below: 0.75em,
+  width: 100%,
+  sticky: true,
+  inset: (bottom: 4pt),
+  stroke: (bottom: (paint: quiet, thickness: 0.6pt, dash: "dotted")),
+  text(size: 10.5pt, weight: "bold", upper(it.body)),
+)
 
 // Typst does not break overlong tokens. Split them into chunks joined by
 // zero-width weak spacing so long words and URLs wrap instead of overflowing.
@@ -32,8 +67,8 @@
         while i < chars.len() {
           out += text(chars.slice(i, calc.min(i + chunk, chars.len())).join())
           i += chunk
+          // 0pt weak spacing is optimized away and never breaks; 0.01pt does.
           if i < chars.len() { out += h(0.01pt, weak: true) }
-      // 0pt weak spacing is optimized away and never breaks; 0.01pt does.
         }
       } else {
         out += text(w)
@@ -45,25 +80,15 @@
   out
 }
 
-// Only the heading is sticky; sticking the body too would push a whole section
-// to the next page and leave a nearly empty page behind.
 #let section(title, body) = {
-  block(above: 1.2em, below: 0.4em, width: 100%, sticky: true, {
-    text(size: 11pt, weight: "bold", tracking: 0.05em, upper(title))
-    v(2pt)
-    line(length: 100%, stroke: 0.5pt)
-    v(4pt)
-  })
+  heading(level: 1, title)
   body
 }
 
-#let bullet(body) = block(
-  above: 1pt,
-  below: 3pt,
-  width: 100%,
-  inset: (left: 1.05em),
-  text([•] + h(0.35em)) + wrappable(body),
-)
+#let bullets(items) = {
+  let shown = items.filter(filled)
+  if shown.len() > 0 { list(..shown.map(wrappable)) }
+}
 
 // A date never gains a month it does not have: year-only prints the year alone.
 // Month abbreviations are generated text, so they follow the content language.
@@ -98,8 +123,24 @@
   }
 }
 
-#let dates_text(dates) = if dates == "" { } else {
-  text(size: 9.5pt, fill: luma(40), wrappable("  (" + dates + ")"))
+// An entry heading: the first filled part leads in bold, dates sit on the
+// right of the same line, and the remaining parts follow on a second line.
+// Plain text in reading order, no table, so extraction stays linear.
+#let entry(parts, dates, above: 0.85em, second: true) = {
+  let parts = parts.filter(filled)
+  block(above: above, below: 0.3em, width: 100%, sticky: true, {
+    if parts.len() > 0 { strong(wrappable(parts.first())) }
+    if not second and parts.len() > 1 { [, ] + parts.slice(1).map(wrappable).join([, ]) }
+    if dates != "" {
+      // A space before the fill lets long headings push the dates to the next
+      // line, still right-aligned, instead of colliding with them.
+      [ ] + h(1fr) + text(fill: quiet, dates)
+    }
+    if second and parts.len() > 1 {
+      linebreak()
+      text(fill: quiet, parts.slice(1).map(wrappable).join([, ]))
+    }
+  })
 }
 
 #let contacts = {
@@ -112,7 +153,7 @@
       parts.push(if filled(l.label) { wrappable(l.label + ": " + l.url) } else { wrappable(l.url) })
     }
   }
-  parts.join([  ·  ])
+  parts.join(text(fill: quiet)[#h(0.5em)·#h(0.5em)])
 }
 
 // A draft entry with no content at all never becomes a row.
@@ -155,45 +196,40 @@
 
 #let skills_section() = {
   section(word("Skills", "Keahlian"), {
-    for s in skill_groups {
+    for (i, s) in skill_groups.enumerate() {
       if filled(s.name) {
-        block(above: 0.5em, below: 1pt, width: 100%, strong(wrappable(s.name)))
+        block(above: if i == 0 { 0em } else { 0.75em }, below: 0.3em, sticky: true, strong(wrappable(s.name)))
       }
-      for b in s.bullets {
-        if filled(b) { bullet(b) }
-      }
+      bullets(s.bullets)
     }
   })
 }
 
 #let roles_section() = {
   section(word("Work Experience", "Pengalaman Kerja"), {
-    for e in roles_shown {
-      block(above: 0.5em, below: 1pt, width: 100%, {
-        let head = ()
-        if filled(e.title) { head.push(strong(wrappable(e.title))) }
-        if filled(e.company) { head.push(wrappable(e.company)) }
-        // Functional employment is a compact employer/title/date list; the
-        // location and achievement bullets stay in the project, unrendered.
-        if not compact_roles and filled(e.location) { head.push(wrappable(e.location)) }
-        head.join([, ])
-        dates_text(date_range(e))
-      })
-      if not compact_roles {
-        for b in e.bullets {
-          if filled(b) { bullet(b) }
-        }
+    for (i, e) in roles_shown.enumerate() {
+      // Functional employment is a compact employer/title/date list; the
+      // location and achievement bullets stay in the project, unrendered.
+      if compact_roles {
+        entry((e.title, e.company), date_range(e), above: if i == 0 { 0em } else { 0.4em }, second: false)
+      } else {
+        entry((e.title, e.company, e.location), date_range(e), above: if i == 0 { 0em } else { 1.05em })
+        bullets(e.bullets)
       }
     }
   })
 }
 
-// Header
-#text(size: 19pt, weight: "bold", wrappable(cv.name))
+// Header: name, then one quiet contact line. Contact details stay in the body,
+// never in page headers or footers.
+#block(below: 0pt, text(size: 22pt, weight: "bold", wrappable(cv.name)))
 
-#if contacts != [] {
-  v(3pt)
-  text(size: 9.5pt, fill: luma(40), contacts)
+#if filled(cv.headline) {
+  block(above: 9pt, below: 0pt, text(size: 11.5pt, wrappable(cv.headline)))
+}
+
+#if contacts != none and contacts != [] {
+  block(above: 9pt, below: 0.4em, text(size: 9.5pt, fill: quiet, contacts))
 }
 
 #if filled(cv.summary) {
@@ -207,18 +243,9 @@
 
 #if schools.len() > 0 {
   section(word("Education", "Pendidikan"), {
-    for e in schools {
-      block(above: 0.5em, below: 1pt, width: 100%, {
-        let head = ()
-        if filled(e.degree) { head.push(strong(wrappable(e.degree))) }
-        if filled(e.school) { head.push(wrappable(e.school)) }
-        if filled(e.location) { head.push(wrappable(e.location)) }
-        head.join([, ])
-        dates_text(date_range(e))
-      })
-      for b in e.bullets {
-        if filled(b) { bullet(b) }
-      }
+    for (i, e) in schools.enumerate() {
+      entry((e.degree, e.school, e.location), date_range(e), above: if i == 0 { 0em } else { 1.05em })
+      bullets(e.bullets)
     }
   })
 }
@@ -228,44 +255,29 @@
 
 #if project_entries.len() > 0 {
   section(word("Projects", "Proyek"), {
-    for p in project_entries {
-      block(above: 0.5em, below: 1pt, width: 100%, {
-        if filled(p.name) { strong(wrappable(p.name)) }
-        if filled(p.detail) {
-          if filled(p.name) { [ — ] }
-          wrappable(p.detail)
-        }
-      })
-      for b in p.bullets {
-        if filled(b) { bullet(b) }
-      }
+    for (i, p) in project_entries.enumerate() {
+      entry((p.name, p.detail), "", above: if i == 0 { 0em } else { 1.05em })
+      bullets(p.bullets)
     }
   })
 }
 
 #if certs.len() > 0 {
   section(word("Certifications", "Sertifikasi"), {
-    for c in certs {
-      block(above: 1pt, below: 3pt, width: 100%, {
-        let head = ()
-        if filled(c.name) { head.push(strong(wrappable(c.name))) }
-        if filled(c.issuer) { head.push(wrappable(c.issuer)) }
-        head.join([, ])
-        dates_text(fmt_date(c.date))
-      })
+    for (i, c) in certs.enumerate() {
+      entry((c.name, c.issuer), fmt_date(c.date), above: if i == 0 { 0em } else { 0.7em })
     }
   })
 }
 
 #if langs.len() > 0 {
   section(word("Languages", "Bahasa"), {
-    for l in langs {
-      let entry_label = if filled(l.name) and filled(l.level) {
-        l.name + " — " + l.level
+    langs
+      .map(l => if filled(l.name) and filled(l.level) {
+        wrappable(l.name + " — " + l.level)
       } else {
-        l.name + l.level
-      }
-      block(above: 1pt, below: 1pt, width: 100%, wrappable(entry_label))
-    }
+        wrappable(l.name + l.level)
+      })
+      .join(text(fill: quiet)[#h(0.6em)·#h(0.6em)])
   })
 }

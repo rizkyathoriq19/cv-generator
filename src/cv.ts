@@ -32,6 +32,8 @@ export type Language = { name: string; level: string };
 
 export type Cv = {
   name: string;
+  /** One line under the name, e.g. "Full Stack Developer". Optional. */
+  headline: string;
   email: string;
   phone: string;
   location: string;
@@ -68,6 +70,9 @@ export type ProjectSummary = {
   title: string;
   name: string;
   updated_at: number;
+  /** Null when no revision of the file is readable. */
+  structure: Structure | null;
+  content_language: Lang | null;
   /** The saved file is unreadable; opening it recovers or reports the damage. */
   damaged: boolean;
 };
@@ -100,6 +105,7 @@ export const emptyDate = (): CvDate => ({ year: null, month: null });
 
 export const emptyCv = (): Cv => ({
   name: '',
+  headline: '',
   email: '',
   phone: '',
   location: '',

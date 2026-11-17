@@ -1,5 +1,5 @@
 import { createContext, useContext } from 'react';
-import type { Lang } from './cv';
+import type { Lang, Structure } from './cv';
 
 export type { Lang };
 
@@ -42,15 +42,18 @@ export const MONTHS: Record<Lang, string[]> = {
 };
 
 const EN = {
-  libraryTagline: 'Local library — projects stay on this device.',
+  libraryTagline: 'Stored only on this device. Nothing is uploaded.',
+  yourCvs: 'Your CVs',
+  cvsTab: 'CVs',
+  libraryViews: 'Library views',
+  updated: 'Updated',
   newCv: 'New CV',
-  refresh: 'Refresh',
-  noCvs: 'No CVs yet. Create one to start.',
+  noCvs: 'No CVs yet. Each CV is one project you can duplicate for another job or language.',
   duplicate: 'Duplicate',
   editorTagline: 'Autosaves one second after you stop editing.',
   retrySave: 'Retry save',
   library: 'Library',
-  projectNameOptional: 'Project name (optional)',
+  projectNameOptional: 'Name in library (optional)',
   untitledCv: 'Untitled CV',
   contentStructure: 'Content structure',
   structureReverse: 'Reverse chronological',
@@ -62,6 +65,8 @@ const EN = {
   interfaceShort: 'Interface',
   contactDetails: 'Contact details',
   fullName: 'Full name',
+  headlineOptional: 'Headline (optional)',
+  headlineExample: 'e.g. Full Stack Developer',
   email: 'Email',
   phoneOptional: 'Phone (optional)',
   locationOptional: 'Location (optional)',
@@ -74,15 +79,20 @@ const EN = {
   projects: 'Projects',
   certifications: 'Certifications',
   languages: 'Languages',
-  renderPreview: 'Render preview',
-  exportPdf: 'Export current PDF…',
+  renderPreview: 'Refresh preview',
+  exportPdf: 'Export PDF…',
+  exportedTo: 'Exported to',
+  upToDate: 'Up to date',
+  renderDetails: 'Render details',
+  sectionsAria: 'CV sections',
+  page: 'page',
+  pages: 'pages',
   save: 'Save',
   render: 'Render',
   preview: 'Preview',
   previewHash: 'Preview SHA-256',
   export: 'Export',
   exportHash: 'Export SHA-256',
-  pageCount: 'page(s)',
   revision: 'revision',
   outdated: '(outdated)',
   none: 'none',
@@ -174,15 +184,18 @@ const EN = {
 export type Strings = { [K in keyof typeof EN]: string };
 
 const ID: Strings = {
-  libraryTagline: 'Pustaka lokal — proyek tetap di perangkat ini.',
+  libraryTagline: 'Hanya tersimpan di perangkat ini. Tidak ada yang diunggah.',
+  yourCvs: 'CV Anda',
+  cvsTab: 'CV',
+  libraryViews: 'Tampilan pustaka',
+  updated: 'Diperbarui',
   newCv: 'CV Baru',
-  refresh: 'Muat ulang',
-  noCvs: 'Belum ada CV. Buat satu untuk memulai.',
+  noCvs: 'Belum ada CV. Setiap CV adalah satu proyek yang dapat Anda duplikat untuk lowongan atau bahasa lain.',
   duplicate: 'Duplikat',
   editorTagline: 'Menyimpan otomatis satu detik setelah Anda berhenti mengedit.',
   retrySave: 'Ulangi simpan',
   library: 'Pustaka',
-  projectNameOptional: 'Nama proyek (opsional)',
+  projectNameOptional: 'Nama di pustaka (opsional)',
   untitledCv: 'CV Tanpa Judul',
   contentStructure: 'Struktur konten',
   structureReverse: 'Kronologis terbalik',
@@ -194,6 +207,8 @@ const ID: Strings = {
   interfaceShort: 'Antarmuka',
   contactDetails: 'Detail kontak',
   fullName: 'Nama lengkap',
+  headlineOptional: 'Judul profesi (opsional)',
+  headlineExample: 'mis. Full Stack Developer',
   email: 'Email',
   phoneOptional: 'Telepon (opsional)',
   locationOptional: 'Lokasi (opsional)',
@@ -206,15 +221,20 @@ const ID: Strings = {
   projects: 'Proyek',
   certifications: 'Sertifikasi',
   languages: 'Bahasa',
-  renderPreview: 'Render pratinjau',
-  exportPdf: 'Ekspor PDF saat ini…',
+  renderPreview: 'Perbarui pratinjau',
+  exportPdf: 'Ekspor PDF…',
+  exportedTo: 'Diekspor ke',
+  upToDate: 'Terkini',
+  renderDetails: 'Detail render',
+  sectionsAria: 'Bagian CV',
+  page: 'halaman',
+  pages: 'halaman',
   save: 'Simpan',
   render: 'Render',
   preview: 'Pratinjau',
   previewHash: 'SHA-256 pratinjau',
   export: 'Ekspor',
   exportHash: 'SHA-256 ekspor',
-  pageCount: 'halaman',
   revision: 'revisi',
   outdated: '(kedaluwarsa)',
   none: 'belum ada',
@@ -305,6 +325,12 @@ const ID: Strings = {
 };
 
 export const STRINGS: Record<Lang, Strings> = { english: EN, indonesian: ID };
+
+export const STRUCTURE_KEY: Record<Structure, keyof Strings> = {
+  'reverse-chronological': 'structureReverse',
+  functional: 'structureFunctional',
+  combination: 'structureCombination',
+};
 
 /** Interface language is an application preference, never part of a CV. */
 const LANG_KEY = 'cvgen.interfaceLanguage';

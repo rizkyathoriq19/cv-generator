@@ -35,6 +35,7 @@ stale lock.
   "updated_at": 1763270400,
   "cv": {
     "name": "Ada Lovelace",
+    "headline": "Analytical Engine Programmer",
     "email": "ada@example.invalid",
     "phone": "",
     "location": "London",
@@ -82,7 +83,7 @@ stale lock.
 | `updated_at` | Unix seconds written by the application on every save; the library lists the most recently changed project first. |
 | `cv` | The authored CV data. Every section is optional: incomplete drafts are valid files. |
 
-`cv` sections: contact details (`name`, `email`, `phone`, `location`, `links`),
+`cv` sections: contact details (`name`, optional `headline`, `email`, `phone`, `location`, `links`),
 `summary`, `experience`, `education`, `skills`, `projects`, `certifications`, and
 `languages`. Each entry type is a plain list the user can add to, remove from, and
 reorder; stored order is the user's manual order.

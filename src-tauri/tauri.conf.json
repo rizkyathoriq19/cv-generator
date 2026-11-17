@@ -41,7 +41,7 @@
           "/usr/share/doc/cv-generator/install.md": "../docs/linux-install.md",
           "/usr/share/doc/cv-generator/LICENSE-Apache-2.0.txt": "../node_modules/pdfjs-dist/LICENSE",
           "/usr/share/doc/cv-generator/LICENSE-MIT-React.txt": "../node_modules/react/LICENSE",
-          "/usr/share/doc/cv-generator/LICENSE-LiberationSerif.txt": "fonts/LICENSE-LiberationSerif.txt"
+          "/usr/share/doc/cv-generator/LICENSE-Liberation.txt": "fonts/LICENSE-Liberation.txt"
         }
       },
       "appimage": {
@@ -50,7 +50,7 @@
           "usr/share/doc/cv-generator/install.md": "../docs/linux-install.md",
           "usr/share/doc/cv-generator/LICENSE-Apache-2.0.txt": "../node_modules/pdfjs-dist/LICENSE",
           "usr/share/doc/cv-generator/LICENSE-MIT-React.txt": "../node_modules/react/LICENSE",
-          "usr/share/doc/cv-generator/LICENSE-LiberationSerif.txt": "fonts/LICENSE-LiberationSerif.txt"
+          "usr/share/doc/cv-generator/LICENSE-Liberation.txt": "fonts/LICENSE-Liberation.txt"
         }
       }
     }
