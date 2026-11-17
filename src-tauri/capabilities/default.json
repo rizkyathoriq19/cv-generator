@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Preview and export the locally rendered PDF.",
+  "description": "Preview and export the locally rendered PDF, and export or import project backups.",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:allow-save"]
+  "permissions": ["core:default", "dialog:allow-save", "dialog:allow-open"]
 }

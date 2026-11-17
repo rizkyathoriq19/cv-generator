@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -744,7 +745,8 @@ fn write_project(dir: &Path, project: &Project) -> Result<Project, String> {
     let json = serde_json::to_vec_pretty(&stored)
         .map_err(|e| format!("could not encode project: {e}"))?;
     // Temp write + rename: a failed write leaves the previous file intact.
-    save_atomically(&project_path(dir, &stored.id)?, &json)?;
+    // ponytail: project-save detail stays English OS text (ticket 05 limit); export localizes.
+    save_atomically(&project_path(dir, &stored.id)?, &json, Language::English)?;
     Ok(stored)
 }
 
@@ -813,6 +815,138 @@ fn save_project(app: tauri::AppHandle, project: Project) -> Result<Project, Stri
 }
 
 // ---------------------------------------------------------------------------
+// Project backups: portable, unencrypted snapshots that import as a new project
+// ---------------------------------------------------------------------------
+
+const BACKUP_FORMAT: &str = "cv-generator-backup";
+const BACKUP_VERSION: u32 = 1;
+/// A CV is kilobytes of text. This bounds the read and parse before any decoding;
+/// export refuses to write a file import would refuse to read.
+const MAX_BACKUP_BYTES: usize = 2 * 1024 * 1024;
+
+/// A backup carries no id, path, or timestamp: identity belongs to the library.
+/// `deny_unknown_fields` rejects a file that tries to bring one.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Backup {
+    format: String,
+    version: u32,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    structure: Structure,
+    #[serde(default)]
+    content_language: Language,
+    /// Required: a file without content is not a snapshot of a project.
+    cv: Cv,
+}
+
+/// Both directions refuse the same size; export says so before writing anything.
+fn within_backup_limit(len: usize, lang: Language) -> Result<(), String> {
+    if len <= MAX_BACKUP_BYTES {
+        return Ok(());
+    }
+    let limit = MAX_BACKUP_BYTES;
+    Err(lang.pick(
+        format!("The backup is larger than the {limit}-byte limit."),
+        format!("Cadangan melebihi batas {limit} byte."),
+    ))
+}
+
+fn encode_backup(backup: &Backup, lang: Language) -> Result<Vec<u8>, String> {
+    let json = serde_json::to_vec_pretty(backup).map_err(|e| format!("could not encode backup: {e}"))?;
+    within_backup_limit(json.len(), lang)?;
+    Ok(json)
+}
+
+/// Everything is checked here, before the library is touched.
+fn parse_backup(bytes: &[u8], lang: Language) -> Result<Backup, String> {
+    let invalid = |detail: String| {
+        lang.pick(
+            format!("This is not a valid CV Generator backup: {detail}"),
+            format!("Ini bukan cadangan CV Generator yang valid: {detail}"),
+        )
+    };
+    let value: serde_json::Value = serde_json::from_slice(bytes).map_err(|e| invalid(e.to_string()))?;
+    if value.get("format").and_then(|f| f.as_str()) != Some(BACKUP_FORMAT) {
+        return Err(invalid(lang.pick("backup format marker missing", "penanda format cadangan tidak ada")));
+    }
+    // A newer file is refused by name before its (possibly different) shape is read.
+    if let Some(version) = value.get("version").and_then(|v| v.as_u64()).filter(|v| *v > BACKUP_VERSION as u64) {
+        return Err(lang.pick(
+            format!("This backup uses format version {version}; this app reads version {BACKUP_VERSION}. Update the app to open it."),
+            format!("Cadangan ini memakai format versi {version}; aplikasi ini membaca versi {BACKUP_VERSION}. Perbarui aplikasi untuk membukanya."),
+        ));
+    }
+    let backup: Backup = serde_json::from_value(value).map_err(|e| invalid(e.to_string()))?;
+    if backup.version != BACKUP_VERSION {
+        return Err(invalid(lang.pick(
+            format!("unsupported format version {}", backup.version),
+            format!("versi format {} tidak didukung", backup.version),
+        )));
+    }
+    if let Some(problem) = backup.cv.date_shape_problem(lang) {
+        return Err(invalid(problem));
+    }
+    Ok(backup)
+}
+
+/// Import always mints a new id, so a repeated or look-alike backup can never
+/// replace an existing project. The only write is one new file in `dir`.
+fn import_backup_in(dir: &Path, path: &Path, lang: Language) -> Result<Project, String> {
+    let mut bytes = Vec::new();
+    fs::File::open(path)
+        .and_then(|file| file.take(MAX_BACKUP_BYTES as u64 + 1).read_to_end(&mut bytes))
+        .map_err(|e| lang.pick(format!("could not read the backup: {e}"), format!("tidak dapat membaca cadangan: {e}")))?;
+    within_backup_limit(bytes.len(), lang)?;
+    let backup = parse_backup(&bytes, lang)?;
+    write_project(
+        dir,
+        &Project {
+            version: SCHEMA_VERSION,
+            id: new_project_id(),
+            title: backup.title,
+            structure: backup.structure,
+            content_language: backup.content_language,
+            updated_at: 0,
+            cv: backup.cv,
+        },
+    )
+}
+
+#[tauri::command]
+fn import_backup(app: tauri::AppHandle, path: String, interface_language: Language) -> Result<Project, String> {
+    import_backup_in(&projects_dir(&app)?, Path::new(&path), interface_language)
+}
+
+/// Snapshot of the editor's in-memory CV. The save dialog confirms replacing a
+/// file; `save_atomically` guarantees a failed write leaves the old one intact.
+#[tauri::command]
+fn export_backup(
+    path: String,
+    title: String,
+    structure: Structure,
+    content_language: Language,
+    cv: Cv,
+    interface_language: Language,
+) -> Result<ExportAck, String> {
+    if !path.to_ascii_lowercase().ends_with(".json") {
+        return Err(interface_language.pick(
+            "destination must be a .json file",
+            "tujuan harus berupa berkas .json",
+        ));
+    }
+    // Same preconditions import enforces, so a backup is always importable.
+    if let Some(problem) = cv.date_shape_problem(interface_language) {
+        return Err(problem);
+    }
+    let backup = Backup { format: BACKUP_FORMAT.into(), version: BACKUP_VERSION, title, structure, content_language, cv };
+    let json = encode_backup(&backup, interface_language)?;
+    save_atomically(Path::new(&path), &json, interface_language)?;
+    Ok(ExportAck { path, bytes: json.len(), sha256: hex(&json), warnings: Vec::new() })
+}
+
+// ---------------------------------------------------------------------------
 // Commands: preview bytes are cached in Rust and reused verbatim for export
 // ---------------------------------------------------------------------------
 
@@ -837,7 +971,7 @@ impl CachedRender {
 #[derive(Default)]
 struct RenderCache(Mutex<Option<CachedRender>>);
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct ExportAck {
     path: String,
     bytes: usize,
@@ -904,7 +1038,7 @@ fn export_pdf(
             "tujuan harus berupa berkas .pdf",
         ));
     }
-    save_atomically(Path::new(&path), &cached.bytes)?;
+    save_atomically(Path::new(&path), &cached.bytes, interface_language)?;
     Ok(ExportAck {
         path,
         bytes: cached.bytes.len(),
@@ -915,14 +1049,21 @@ fn export_pdf(
 
 /// Write next to the destination, then rename so a failed write leaves the
 /// existing file untouched.
-fn save_atomically(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let dir = path.parent().filter(|p| !p.as_os_str().is_empty()).ok_or("invalid destination path")?;
-    let name = path.file_name().ok_or("invalid destination path")?.to_string_lossy();
+fn save_atomically(path: &Path, bytes: &[u8], lang: Language) -> Result<(), String> {
+    let invalid = || lang.pick("invalid destination path", "tujuan tidak valid");
+    let dir = path.parent().filter(|p| !p.as_os_str().is_empty()).ok_or_else(invalid)?;
+    let name = path.file_name().ok_or_else(invalid)?.to_string_lossy();
     let tmp = dir.join(format!(".{}.tmp-{}", name, std::process::id()));
-    fs::write(&tmp, bytes).map_err(|e| format!("write failed: {e}"))?;
+    if let Err(e) = fs::write(&tmp, bytes) {
+        let _ = fs::remove_file(&tmp); // never leave a partial snapshot behind
+        return Err(lang.pick(format!("writing the file failed: {e}"), format!("penulisan berkas gagal: {e}")));
+    }
     if let Err(e) = fs::rename(&tmp, path) {
         let _ = fs::remove_file(&tmp);
-        return Err(format!("could not replace destination: {e}"));
+        return Err(lang.pick(
+            format!("could not replace the destination: {e}"),
+            format!("tidak dapat mengganti tujuan: {e}"),
+        ));
     }
     Ok(())
 }
@@ -943,7 +1084,9 @@ pub fn run() {
             create_project,
             duplicate_project,
             open_project,
-            save_project
+            save_project,
+            export_backup,
+            import_backup
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -1078,7 +1221,7 @@ mod tests {
         fs::write(&target, b"older content").unwrap();
 
         let pdf = render(&fixture(1, 10), Structure::ReverseChronological, Language::English).unwrap();
-        save_atomically(&target, &pdf).unwrap();
+        save_atomically(&target, &pdf, Language::English).unwrap();
         assert_eq!(fs::read(&target).unwrap(), pdf, "exported bytes differ from rendered bytes");
         assert_eq!(hex(&pdf), hex(&fs::read(&target).unwrap()));
 
@@ -2310,5 +2453,262 @@ mod tests {
             render(&cv, Structure::ReverseChronological, Language::Indonesian).unwrap(),
             "content language did not change the document"
         );
+    }
+
+    // --- ticket 06: portable project backups ---
+
+    fn source_project() -> Project {
+        let mut source = project();
+        source.title = "Synthetic CV".into();
+        source.cv = language_fixture();
+        source.structure = Structure::Combination;
+        source.content_language = Language::Indonesian;
+        source
+    }
+
+    fn backup_of(project: &Project) -> Backup {
+        Backup {
+            format: BACKUP_FORMAT.into(),
+            version: BACKUP_VERSION,
+            title: project.title.clone(),
+            structure: project.structure,
+            content_language: project.content_language,
+            cv: project.cv.clone(),
+        }
+    }
+
+    fn library_snapshot(dir: &Path) -> Vec<(String, Vec<u8>)> {
+        let mut files: Vec<_> = fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| {
+                let path = entry.unwrap().path();
+                (path.file_name().unwrap().to_string_lossy().into_owned(), fs::read(&path).unwrap())
+            })
+            .collect();
+        files.sort();
+        files
+    }
+
+    fn import_bytes(dir: &Path, bytes: &[u8], lang: Language) -> Result<Project, String> {
+        let file = temp_dir("backup-input").join("backup.json");
+        fs::write(&file, bytes).unwrap();
+        import_backup_in(dir, &file, lang)
+    }
+
+    #[test]
+    fn export_then_import_twice_gives_independent_copies_with_all_content() {
+        let library = temp_dir("backup-library");
+        let files = temp_dir("backup-files");
+        let source = source_project();
+        write_project(&library, &source).unwrap();
+        let source_file = library_snapshot(&library);
+
+        let target = files.join("cv-backup.json");
+        let ack = export_backup(
+            target.to_string_lossy().into_owned(),
+            source.title.clone(),
+            source.structure,
+            source.content_language,
+            source.cv.clone(),
+            Language::English,
+        )
+        .unwrap();
+        assert_eq!(ack.bytes, fs::read(&target).unwrap().len());
+        let text = fs::read_to_string(&target).unwrap();
+        assert!(!text.contains(&source.id), "a backup must not carry the project identity");
+        assert!(!text.contains("updated_at"), "a backup must not carry the save timestamp");
+
+        let first = import_backup_in(&library, &target, Language::English).unwrap();
+        let second = import_backup_in(&library, &target, Language::English).unwrap();
+        for copy in [&first, &second] {
+            assert_ne!(copy.id, source.id);
+            assert_eq!(copy.title, source.title);
+            assert_eq!(copy.cv, source.cv, "import lost authored content");
+            assert_eq!(copy.structure, Structure::Combination);
+            assert_eq!(copy.content_language, Language::Indonesian);
+        }
+        assert_ne!(first.id, second.id, "repeated imports must not share an identity");
+        assert_eq!(fs::read_dir(&library).unwrap().count(), 3);
+        assert!(source_file.iter().all(|f| library_snapshot(&library).contains(f)), "source file changed");
+
+        // Edits to one copy reach neither the other copy nor the source.
+        let mut edited = read_project(&library, &first.id).unwrap();
+        edited.cv.summary = "Only the first import was edited.".into();
+        write_project(&library, &edited).unwrap();
+        assert_eq!(read_project(&library, &second.id).unwrap().cv, source.cv);
+        assert_eq!(read_project(&library, &source.id).unwrap().cv, source.cv);
+
+        // The imported copy renders the same document text as the source.
+        let render_text = |p: &Project| document_text(&render_document(&p.cv, p.structure, p.content_language).unwrap());
+        assert_eq!(render_text(&read_project(&library, &second.id).unwrap()), render_text(&source));
+
+        for dir in [library, files] {
+            let _ = fs::remove_dir_all(dir);
+        }
+    }
+
+    #[test]
+    fn unsafe_backups_are_rejected_and_leave_the_library_untouched() {
+        let library = temp_dir("backup-reject");
+        write_project(&library, &source_project()).unwrap();
+        let before = library_snapshot(&library);
+        let valid = serde_json::to_value(backup_of(&source_project())).unwrap();
+        let with = |edit: &dyn Fn(&mut serde_json::Value)| {
+            let mut value = valid.clone();
+            edit(&mut value);
+            serde_json::to_vec(&value).unwrap()
+        };
+        let whole = serde_json::to_vec(&valid).unwrap();
+
+        let cases: Vec<(&str, Vec<u8>)> = vec![
+            ("empty file", Vec::new()),
+            ("not JSON", b"not json at all".to_vec()),
+            ("JSON array", b"[]".to_vec()),
+            ("truncated", whole[..whole.len() / 2].to_vec()),
+            ("no format marker", with(&|v| { v.as_object_mut().unwrap().remove("format"); })),
+            ("another format", with(&|v| v["format"] = "something-else".into())),
+            ("version zero", with(&|v| v["version"] = 0.into())),
+            ("version as text", with(&|v| v["version"] = "1".into())),
+            ("wrong data type", with(&|v| v["cv"]["name"] = 5.into())),
+            ("bad structure", with(&|v| v["structure"] = "chaos".into())),
+            ("month 13", with(&|v| v["cv"]["experience"][0]["start"]["month"] = 13.into())),
+            ("month without year", with(&|v| v["cv"]["certifications"][0]["date"] = serde_json::json!({"year": null, "month": 4}))),
+            ("traversal id", with(&|v| v["id"] = "../../escape".into())),
+            ("path value", with(&|v| v["path"] = "/etc/passwd".into())),
+            ("project updated_at", with(&|v| v["updated_at"] = 7.into())),
+            ("no cv", with(&|v| { v.as_object_mut().unwrap().remove("cv"); })),
+        ];
+        for (label, bytes) in cases {
+            for lang in [Language::English, Language::Indonesian] {
+                let error = import_bytes(&library, &bytes, lang).expect_err(label);
+                assert!(!error.is_empty(), "{label}: empty error");
+                assert_eq!(library_snapshot(&library), before, "{label}: rejected backup changed the library");
+            }
+        }
+        let english = import_bytes(&library, b"[]", Language::English).unwrap_err();
+        let indonesian = import_bytes(&library, b"[]", Language::Indonesian).unwrap_err();
+        assert!(english.contains("not a valid CV Generator backup"), "{english}");
+        assert!(indonesian.contains("bukan cadangan CV Generator"), "{indonesian}");
+
+        // A missing file is an error, not a panic or a library change.
+        assert!(import_backup_in(&library, &library.join("nope.json"), Language::English).is_err());
+        assert!(import_backup_in(&library, &library, Language::English).is_err(), "a directory is not a backup");
+        assert_eq!(library_snapshot(&library), before);
+        let _ = fs::remove_dir_all(library);
+    }
+
+    #[test]
+    fn a_newer_backup_format_is_refused_by_name_whatever_its_shape() {
+        let library = temp_dir("backup-newer");
+        let newer = br#"{"format":"cv-generator-backup","version":2,"cv":"a shape this app cannot read"}"#;
+        let english = import_bytes(&library, newer, Language::English).unwrap_err();
+        let indonesian = import_bytes(&library, newer, Language::Indonesian).unwrap_err();
+        assert!(english.contains("version 2") && english.contains("Update the app"), "{english}");
+        assert!(indonesian.contains("versi 2") && indonesian.contains("Perbarui aplikasi"), "{indonesian}");
+        assert_eq!(fs::read_dir(&library).unwrap().count(), 0, "a refused file left something behind");
+        let _ = fs::remove_dir_all(library);
+    }
+
+    #[test]
+    fn backup_size_limit_is_exact_for_import_and_export() {
+        let library = temp_dir("backup-limit");
+        let mut bytes = serde_json::to_vec(&backup_of(&source_project())).unwrap();
+        bytes.resize(MAX_BACKUP_BYTES, b' '); // trailing whitespace keeps it valid JSON
+        assert_eq!(bytes.len(), MAX_BACKUP_BYTES);
+        assert!(import_bytes(&library, &bytes, Language::English).is_ok(), "a file at the limit must import");
+
+        bytes.push(b' ');
+        let error = import_bytes(&library, &bytes, Language::English).unwrap_err();
+        assert!(error.contains("limit"), "{error}");
+        assert_eq!(fs::read_dir(&library).unwrap().count(), 1, "an oversized file created a project");
+
+        // Export refuses what import would refuse, and writes nothing.
+        let mut huge = source_project();
+        huge.cv.summary = "x".repeat(MAX_BACKUP_BYTES);
+        let target = library.join("../cvgen-never-written.json");
+        let error = export_backup(
+            target.to_string_lossy().into_owned(),
+            String::new(),
+            huge.structure,
+            huge.content_language,
+            huge.cv,
+            Language::English,
+        )
+        .unwrap_err();
+        assert!(error.contains("limit"), "{error}");
+        assert!(!target.exists());
+        let _ = fs::remove_dir_all(library);
+    }
+
+    #[test]
+    fn export_refuses_a_document_import_would_refuse() {
+        let dir = temp_dir("backup-export-dates");
+        let mut cv = source_project().cv;
+        cv.experience[0].start = CvDate { year: Some(2020), month: Some(13) };
+        let target = dir.join("never-written.json");
+        let error = export_backup(
+            target.to_string_lossy().into_owned(),
+            String::new(),
+            Structure::Combination,
+            Language::English,
+            cv,
+            Language::Indonesian,
+        )
+        .unwrap_err();
+        assert!(error.contains("bulan harus antara 1 dan 12"), "{error}");
+        assert!(!target.exists(), "a refused export wrote a partial snapshot");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn markup_looking_text_imports_verbatim_into_the_library_only() {
+        let library = temp_dir("backup-plain-text");
+        let mut source = source_project();
+        source.title = "../../escape".into();
+        source.cv.name = r#"<script>alert(1)</script> #eval("read(\"/etc/passwd\")")"#.into();
+        source.cv.summary = "../../../etc/passwd".into();
+        let bytes = encode_backup(&backup_of(&source), Language::English).unwrap();
+
+        let imported = import_bytes(&library, &bytes, Language::English).unwrap();
+        assert_eq!(imported.title, source.title);
+        assert_eq!(imported.cv, source.cv, "text must stay plain data");
+        let names: Vec<String> = library_snapshot(&library).into_iter().map(|f| f.0).collect();
+        assert_eq!(names, vec![format!("{}.json", imported.id)], "import wrote outside its own project file");
+        assert!(!library.join("../escape").exists());
+        let _ = fs::remove_dir_all(library);
+    }
+
+    #[test]
+    fn failed_or_misdirected_backup_writes_keep_the_destination() {
+        let dir = temp_dir("backup-destination");
+        // The destination cannot be replaced (a non-empty directory): the old
+        // content and the directory listing survive, with no temp file left.
+        let blocked = dir.join("existing.json");
+        fs::create_dir(&blocked).unwrap();
+        fs::write(blocked.join("keep"), b"original").unwrap();
+        assert!(save_atomically(&blocked, b"new backup", Language::English).is_err());
+        assert_eq!(fs::read(blocked.join("keep")).unwrap(), b"original");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1, "a temp file was left behind");
+
+        // An existing real file is replaced whole, never appended or truncated.
+        let target = dir.join("backup.json");
+        fs::write(&target, b"older backup that is longer than the new one").unwrap();
+        save_atomically(&target, b"new", Language::English).unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"new");
+
+        // Only .json destinations are written, and nothing appears otherwise.
+        let wrong = dir.join("backup.pdf");
+        let error = export_backup(
+            wrong.to_string_lossy().into_owned(),
+            String::new(),
+            Structure::default(),
+            Language::default(),
+            Cv::default(),
+            Language::Indonesian,
+        )
+        .unwrap_err();
+        assert!(error.contains(".json"), "{error}");
+        assert!(!wrong.exists());
+        let _ = fs::remove_dir_all(dir);
     }
 }

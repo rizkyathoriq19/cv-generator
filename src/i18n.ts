@@ -142,6 +142,12 @@ const EN = {
   linkLabelOptional: 'Link label (optional)',
   webAddress: 'Web address',
   addLink: 'Add link',
+  exportBackup: 'Export project backup…',
+  importBackup: 'Import project backup…',
+  backupFile: 'CV Generator backup',
+  backupNote:
+    'A project backup is an editable snapshot, not a PDF. It is unencrypted: anyone who can open the file can read it, so store it where you trust.',
+  backupExported: 'Backup saved',
 } as const;
 
 export type Strings = { [K in keyof typeof EN]: string };
@@ -247,6 +253,12 @@ const ID: Strings = {
   linkLabelOptional: 'Label tautan (opsional)',
   webAddress: 'Alamat web',
   addLink: 'Tambah tautan',
+  exportBackup: 'Ekspor cadangan proyek…',
+  importBackup: 'Impor cadangan proyek…',
+  backupFile: 'Cadangan CV Generator',
+  backupNote:
+    'Cadangan proyek adalah salinan yang dapat diedit, bukan PDF. Berkas ini tidak dienkripsi: siapa pun yang dapat membukanya dapat membacanya, jadi simpan di tempat yang Anda percaya.',
+  backupExported: 'Cadangan tersimpan',
 };
 
 export const STRINGS: Record<Lang, Strings> = { english: EN, indonesian: ID };

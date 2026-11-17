@@ -107,6 +107,10 @@ main.library {
   background: #fafaf8;
 }
 
+.note {
+  margin-bottom: 14px;
+}
+
 .list {
   display: grid;
   gap: 8px;
