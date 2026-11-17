@@ -168,3 +168,12 @@ editor shows beside `Saved`.
   Files after: the edit in `t07source.json` (1,755 bytes), a 41-byte preserved copy,
   and the untouched previous revision.
 
+## Third review round
+
+Round 3 found one remaining hard defect: the save guard read the file without the id
+check, so `Refused(ForeignId)` was unreachable and a foreign-id file at `<id>.json`
+could still be overwritten. The guard now uses `read_project`, which adds the id
+check. `a_save_never_overwrites_a_refused_project_file` covers both the newer-version
+and foreign-id cases, and it was verified to fail with the old guard (the save
+returned `Ok` and rewrote the file) before the fix was restored.
+

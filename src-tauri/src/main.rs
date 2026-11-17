@@ -850,8 +850,9 @@ fn write_project_in(
     }
     let current = project_path(dir, &stored.id)?;
     // Damage found while the editor was open is kept before the save replaces it.
-    // A readable file this app refuses is never overwritten by older content.
-    let preserved = match read_project_file(&current) {
+    // A readable file this app refuses (newer version, another project's id) is
+    // never overwritten by older content.
+    let preserved = match read_project(dir, &stored.id) {
         Err(ReadError::Damaged(_)) => preserve_corrupt(dir, &stored.id)?,
         Err(ReadError::Refused(Refusal::Version(version))) => {
             return Err(format!(
@@ -3419,6 +3420,14 @@ mod tests {
         let error = write_project(&dir, &project).unwrap_err();
         assert!(error.contains("refusing to overwrite project version 2"), "{error}");
         assert_eq!(library_snapshot(&dir), before, "a save rewrote a refused file");
+
+        // A file belonging to another project is refused at the save path too.
+        let foreign = br#"{"version":1,"id":"someone-else","cv":{"name":"Not mine"}}"#;
+        fs::write(&current, foreign).unwrap();
+        let before = library_snapshot(&dir);
+        let error = write_project(&dir, &project).unwrap_err();
+        assert!(error.contains("belongs to another project"), "{error}");
+        assert_eq!(library_snapshot(&dir), before, "a save rewrote a foreign project file");
         let _ = fs::remove_dir_all(&dir);
     }
 }
