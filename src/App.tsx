@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { save as saveDialog } from '@tauri-apps/plugin-dialog';
+import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
 import {
   STRUCTURES,
   projectLabel,
@@ -82,6 +82,7 @@ export default function App() {
   const [status, setStatus] = useState<RenderState>('idle');
   const [error, setError] = useState('');
   const [exported, setExported] = useState<(ExportAck & { matches: boolean }) | null>(null);
+  const [backupStatus, setBackupStatus] = useState('');
   const [lang, setLang] = useState<Lang>(storedLang);
 
   const t = STRINGS[lang];
@@ -132,6 +133,7 @@ export default function App() {
     setSaveError('');
     setError('');
     setExported(null);
+    setBackupStatus('');
     setPreview(null);
     host.current?.replaceChildren();
   };
@@ -149,6 +151,23 @@ export default function App() {
   const duplicateProject = async (id: string) => {
     try {
       showProject(await invoke<Project>('duplicate_project', { id }));
+      await refreshLibrary();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  /** Import always creates a new CV; the backup file and existing CVs are never modified. */
+  const importBackup = async () => {
+    setError('');
+    try {
+      const path = await openDialog({
+        multiple: false,
+        directory: false,
+        filters: [{ name: t.backupFile, extensions: ['json'] }],
+      });
+      if (!path) return;
+      showProject(await invoke<Project>('import_backup', { path, interfaceLanguage: lang }));
       await refreshLibrary();
     } catch (e) {
       setError(String(e));
@@ -297,6 +316,30 @@ export default function App() {
     }
   };
 
+  const exportBackup = async () => {
+    if (!doc) return;
+    setBackupStatus('');
+    setError('');
+    try {
+      const path = await saveDialog({
+        defaultPath: `${doc.cv.name.trim() || 'cv'}-backup.json`,
+        filters: [{ name: t.backupFile, extensions: ['json'] }],
+      });
+      if (!path) return;
+      const ack = await invoke<ExportAck>('export_backup', {
+        path,
+        title: doc.title,
+        structure: doc.structure,
+        contentLanguage: doc.content_language,
+        cv: doc.cv,
+        interfaceLanguage: lang,
+      });
+      setBackupStatus(`${ack.bytes} bytes → ${ack.path}`);
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
   // --- views ---------------------------------------------------------------
 
   const setField = (field: 'name' | 'email' | 'phone' | 'location' | 'summary', value: string) =>
@@ -319,7 +362,11 @@ export default function App() {
           <button type="button" onClick={() => void refreshLibrary()}>
             {t.refresh}
           </button>
+          <button type="button" onClick={() => void importBackup()}>
+            {t.importBackup}
+          </button>
         </div>
+        <p className="muted note">{t.backupNote}</p>
 
         {projects.length === 0 ? (
           <p className="muted">{t.noCvs}</p>
@@ -482,7 +529,16 @@ export default function App() {
             <button type="button" onClick={() => void exportPdf()} disabled={!preview || status === 'failed'}>
               {t.exportPdf}
             </button>
+            <button type="button" onClick={() => void exportBackup()}>
+              {t.exportBackup}
+            </button>
           </div>
+          <p className="muted note">{t.backupNote}</p>
+          {backupStatus && (
+            <p className="muted" role="status">
+              {t.backupExported}: {backupStatus}
+            </p>
+          )}
 
           <dl className="state">
             <dt>{t.save}</dt>

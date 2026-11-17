@@ -113,6 +113,46 @@ survive save/reopen.
   Missing optional content only produces warnings: missing contact details, undated
   entries, and — for the `functional` and `combination` structures only — when no
   skill group has an achievement bullet. The last warning never blocks export.
-- Files are unencrypted plain JSON. Corrupted-file recovery, one rolling previous
-  revision, and project backup import/export are later slices and are not part of
-  version 1 behaviour yet.
+- Files are unencrypted plain JSON. Corrupted-file recovery and one rolling previous
+  revision are a later slice and are not part of version 1 behaviour yet.
+
+## Project backup (version 1)
+
+A backup is a portable, editable, **unencrypted** snapshot of one project, distinct
+from a PDF. It is the project shape without identity or save state:
+
+```json
+{
+  "format": "cv-generator-backup",
+  "version": 1,
+  "title": "",
+  "structure": "reverse-chronological",
+  "content_language": "english",
+  "cv": { "...": "same as the project file" }
+}
+```
+
+- Export snapshots the editor's current in-memory CV (including unsaved edits),
+  structure, content language, and title. Destination must end in `.json` (the import
+  picker filters to the same type). On Linux the save dialog asks before replacing a
+  file; other platforms are unverified until the package slices. The write is temp
+  file + rename, so a cancelled or failed export leaves the existing destination
+  untouched.
+- Import **always** creates a new project with a freshly generated id, so repeated
+  imports never share identity and never replace a project. A backup has no `id`,
+  `updated_at`, or path field: unknown top-level fields (including those) are rejected
+  rather than trusted.
+- Everything is validated before the library is touched: the file is read with a
+  hard cap of **2 MiB** (`MAX_BACKUP_BYTES`, 2,097,152 bytes; exactly that size is
+  accepted, one byte more is refused; export refuses to write a larger file), the
+  `format` marker must match, `version` greater than 1 is refused by name as a newer
+  format before its shape is read, and the remaining fields must deserialize into the
+  schema: `cv` is required (an empty `{}` CV is a valid draft), and stored date shapes
+  must be valid. Export applies the same date rule, so a written backup always imports.
+  Rejection leaves the library byte-identical.
+- All text is plain data: it is stored verbatim and rendered by the same
+  data-only template path as authored text, never evaluated.
+- Import/export controls and errors follow the interface language, including read,
+  parse, size, and destination-write failures; the backup stores only the content
+  language. Saving a working project keeps the operating-system detail of a write
+  failure in English (ticket 05 limit).
