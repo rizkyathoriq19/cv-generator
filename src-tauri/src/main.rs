@@ -5,6 +5,7 @@ mod backup;
 mod cv;
 mod files;
 mod library;
+mod mcp;
 mod render;
 mod trash;
 #[cfg(test)]
@@ -60,5 +61,8 @@ pub fn run() {
 }
 
 fn main() {
+    if std::env::args().any(|a| a == "--mcp") {
+        return mcp::serve();
+    }
     run();
 }
