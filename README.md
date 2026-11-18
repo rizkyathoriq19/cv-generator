@@ -16,23 +16,24 @@ cd src-tauri && cargo test
 
 ## MCP server (generate a CV from an agent)
 
-The same binary runs as a stdio [MCP](https://modelcontextprotocol.io) server with `--mcp`.
-It uses the same validation and Typst template as the app's PDF export, and needs no window or network.
+[`mcp/server.ts`](mcp/server.ts) is a stdio [MCP](https://modelcontextprotocol.io) server (Node >= 23.6, no dependencies).
+It renders by running the app binary headless (`cv-generator --generate`), so it uses the same validation and Typst template as the app's PDF export, and needs no window or network.
 
-Build it:
+Build the binary:
 
 ```bash
 cd src-tauri && cargo build --release   # -> src-tauri/target/release/cv-generator
 ```
 
-Register it with your agent, for example in an `mcpServers` config:
+Register the server with your agent, for example in an `mcpServers` config.
+Set `CV_GENERATOR_BIN` only if the binary is not at `src-tauri/target/release/cv-generator`.
 
 ```json
 {
   "mcpServers": {
     "cv-generator": {
-      "command": "/absolute/path/to/src-tauri/target/release/cv-generator",
-      "args": ["--mcp"]
+      "command": "node",
+      "args": ["/absolute/path/to/mcp/server.ts"]
     }
   }
 }

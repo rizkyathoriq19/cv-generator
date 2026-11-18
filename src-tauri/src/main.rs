@@ -4,8 +4,8 @@
 mod backup;
 mod cv;
 mod files;
+mod generate;
 mod library;
-mod mcp;
 mod render;
 mod trash;
 #[cfg(test)]
@@ -61,8 +61,8 @@ pub fn run() {
 }
 
 fn main() {
-    if std::env::args().any(|a| a == "--mcp") {
-        return mcp::serve();
+    if std::env::args().any(|a| a == "--generate") {
+        std::process::exit(generate::run());
     }
     run();
 }
